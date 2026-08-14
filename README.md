@@ -6,116 +6,102 @@
 ![Tests](https://img.shields.io/badge/tests-65%20passing-brightgreen)
 ![Telegram](https://img.shields.io/badge/Telegram-bot-26A5E4?logo=telegram&logoColor=white)
 
-> **EN — TL;DR:** A personal AI-assisted agent for the [Biwenger](https://biwenger.as.com)
-> fantasy football league. It suggests the optimal weekly lineup (with a smart
-> captain), auto-bids and "snipes" at market close, manages squad economy and
-> transfers, plans around the fixture calendar, finds differentials and spies on
-> rivals — all driven from a Telegram bot where **you confirm every real action
-> with a button**. Ships with a self-calibrating points predictor that learns
-> from its own hits. Runs 24/7 in a single Docker container. Docs below are in
-> Spanish; open an issue if you'd like the full English version.
+**🌐 English** · [Español](./README.es.md)
 
----
+A personal AI-assisted agent to optimize your [Biwenger](https://biwenger.as.com)
+fantasy football league: optimal weekly lineup with a smart captain, last-minute
+bidding and "sniping", squad economy/market management, a fixture-calendar
+planner, differentials and a rival spy — all driven from a Telegram bot with
+button confirmation. It ships with a points predictor that **self-calibrates**,
+learning from its own hits.
 
-Agente personal para optimizar tu liga de fantasy [Biwenger](https://biwenger.as.com):
-alineación óptima semanal con capitán inteligente, pujas y "sniping" de última
-hora, gestión de economía/mercado, planificador de calendario, diferenciales y
-espía de rivales — todo controlado desde un bot de Telegram con confirmación por
-botón. Incluye un predictor de puntos que se **auto-calibra** aprendiendo de sus
-propios aciertos.
+> **Philosophy:** the agent *recommends*, you *decide*. No real action (buy, bid,
+> pay a clause, sell) runs without your explicit confirmation. The few optional
+> automations are **off by default**. It starts in safe mode (`DRY_RUN=true`),
+> which only simulates write actions.
 
-> **Filosofía:** el agente *recomienda*, tú *decides*. Ninguna acción real (fichar,
-> pujar, cláusula, vender) se ejecuta sin tu confirmación explícita. Las pocas
-> automatizaciones opcionales están **apagadas por defecto**. Arranca en modo
-> seguro (`DRY_RUN=true`), que solo simula las acciones de escritura.
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the full design and
+[`DEPLOY_VPS.md`](./DEPLOY_VPS.md) to run it 24/7 with Docker.
 
-Ver [`ARCHITECTURE.md`](./ARCHITECTURE.md) para el diseño completo y
-[`DEPLOY_VPS.md`](./DEPLOY_VPS.md) para desplegarlo 24/7 con Docker.
+## About the Biwenger API
 
-## Sobre la API de Biwenger
-
-Biwenger **no** tiene API pública, así que `core/client.py` está construido a
-partir de ingeniería inversa de las peticiones de la web (headers, payloads),
-apoyándose también en proyectos de la comunidad como
-[pablopb3/biwenger-api](https://github.com/pablopb3/biwenger-api) y
-[biwenger-java-api](https://github.com/jbujalance/biwenger-java-api). Como la API
-no oficial puede cambiar sin aviso, si algo deja de funcionar revisa los
-endpoints con las devtools del navegador (pestaña Network). Todo el acceso HTTP
-está aislado en un único fichero (`core/client.py`) precisamente para que ese sea
-el único sitio a tocar.
+Biwenger has **no** public API, so `core/client.py` is built by reverse-engineering
+the web app's requests (headers, payloads), also drawing on community projects
+like [pablopb3/biwenger-api](https://github.com/pablopb3/biwenger-api) and
+[biwenger-java-api](https://github.com/jbujalance/biwenger-java-api). Since the
+unofficial API can change without notice, if something breaks check the endpoints
+with your browser devtools (Network tab). All HTTP access is isolated in a single
+file (`core/client.py`) precisely so that's the only place you need to touch.
 
 ## Quickstart
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # rellena tus credenciales y IDs de liga
-python main.py --once  # ejecuta un ciclo manual (sin automatizar pujas todavía)
+cp .env.example .env   # fill in your credentials and league IDs
+python main.py --once  # run one manual cycle (no automated bidding yet)
 ```
 
-## Módulos
+## Modules
 
-- `core/` — cliente HTTP de Biwenger (login, plantilla, mercado, pujas) y modelos de datos.
-- `lineup/` — predicción de puntos por jugador + solver de alineación óptima (PuLP).
-- `bidding/` — cálculo de puja ideal/máxima + motor de "sniping" en el cierre de mercado.
-- `economy/` — análisis de tendencias, sugerencias de compra/venta, simulación de presupuesto.
-- `bot/` — notificaciones e interacción vía Telegram.
-- `scheduler/` — orquestación de todos los jobs periódicos (APScheduler).
-- `data/` — modelos de base de datos (SQLAlchemy) para guardar histórico de precios/puntos.
+- `core/` — Biwenger HTTP client (login, squad, market, bids) and data models.
+- `lineup/` — per-player points prediction + optimal-lineup solver (PuLP).
+- `bidding/` — ideal/maximum bid calculation + "sniping" engine at market close.
+- `economy/` — trend analysis, buy/sell suggestions, budget simulation.
+- `bot/` — Telegram notifications and interaction.
+- `scheduler/` — orchestration of all periodic jobs (APScheduler).
+- `data/` — database models (SQLAlchemy) to store price/points history.
 
-## Comandos del bot (Telegram)
+## Bot commands (Telegram)
 
-Un único mensaje diario con botones (nada de spam). Desde ahí o escribiendo el
-comando:
+A single daily message with buttons (no spam). From there or by typing the command:
 
-- `/alineacion` — el once óptimo de la jornada, con **capitán inteligente**: combina puntos esperados (ya incluye la dificultad del partido) con un pequeño bonus si es diferencial (casi nadie más lo tiene → capitanearlo renta más para subir puestos).
-- `/mercado` — chollos, tendencias de precio y cláusulas (con botones para fichar/vender).
-- `/optimizar` — la mejor jugada: vende X y ficha Z para subir puntos, **mirando las próximas jornadas** (premia a quien tiene calendario fácil por delante).
-- `/vender` — timing de ventas: a quién soltar YA porque su precio ha hecho techo o baja, y/o le viene una racha de calendario dura (con botón de vender).
-- `/calendario` — dificultad de las próximas 5 jornadas de tu equipo: separa rachas fáciles (a quién capitanear/mantener) de rachas duras (a quién rotar o vender antes de que baje).
-- `/diferenciales` — tus jugadores buenos que casi nadie más tiene en la liga (tu ventaja) y "gemas libres": jugadores buenos que NADIE tiene y están en el mercado libre.
-- `/quiniela` — pronóstico 1X2 de la jornada (y se guarda para evaluarlo luego).
-- `/resumen` — cómo fue tu equipo en la última jornada + aprendizaje del modelo.
-- `/objetivos` — tus auto-pujas (sniping) programadas.
-- `/auto` — activa/desactiva las automatizaciones (ver abajo).
-- `/aprendizaje` — estado del auto-calibrado del predictor.
-- `/token <valor>` — renueva el token de Biwenger en caliente, sin tocar el servidor.
+- `/alineacion` — the optimal XI of the gameweek, with a **smart captain**: combines expected points (already including match difficulty) with a small bonus if the player is a differential (few others own him → captaining him pays off more for climbing the table).
+- `/mercado` — bargains, price trends and clauses (with buttons to buy/sell).
+- `/optimizar` — the best move: sell X and buy Z to gain points, **looking at upcoming gameweeks** (rewards players with an easy run ahead).
+- `/vender` — sell timing: who to offload NOW because their price has peaked or is dropping, and/or a tough fixture run is coming (with a sell button).
+- `/calendario` — difficulty of your team's next 5 gameweeks: separates easy runs (who to captain/hold) from tough runs (who to rotate or sell before the price drops).
+- `/diferenciales` — your strong players that almost nobody else owns (your edge) plus "free gems": strong players that NOBODY owns and are on the free market.
+- `/quiniela` — 1X2 forecast of the gameweek (saved to evaluate later).
+- `/resumen` — how your team did last gameweek + model learning.
+- `/objetivos` — your scheduled auto-bids (sniping).
+- `/auto` — enable/disable the automations (see below).
+- `/aprendizaje` — status of the predictor's self-calibration.
+- `/token <value>` — hot-refresh the Biwenger token, without touching the server.
 - `/equipo`, `/help`.
 
-### Automatizaciones con límites (`/auto`)
+### Bounded automations (`/auto`)
 
-Dos interruptores, **ambos apagados por defecto**. El agente nunca actúa sin que
-los enciendas tú:
+Two switches, **both off by default**. The agent never acts unless you turn them on:
 
-- **Alineación automática** (riesgo cero): pone tu once óptimo una vez por jornada,
-  ~4h antes del primer partido. Es reversible: puedes cambiarla antes del cierre.
-- **Subir cláusula automática**: blinda a tus cracks vulnerables (cláusula baja)
-  subiéndola una sola vez por jugador. Gasta saldo y usa un endpoint de escritura
-  aún no confirmado del todo — vigílalo la primera vez que lo actives.
+- **Auto-lineup** (zero risk): sets your optimal XI once per gameweek, ~4h before
+  the first match. Reversible: you can change it before the deadline.
+- **Auto clause-raising**: shields your vulnerable stars (low clause) by raising it
+  once per player. It spends budget and uses a write endpoint that isn't fully
+  confirmed yet — watch it the first time you enable it.
 
-### Espía de rivales (proactivo)
+### Rival spy (proactive)
 
-En cada sincronización el agente detecta fichajes/ventas NUEVOS de los rivales y
-te avisa una sola vez por movimiento (con deduplicación en BD, sin repetir). La
-primera vez solo aprende el estado, sin soltar un aviso gigante.
+On each sync the agent detects rivals' NEW transfers/sales and alerts you once per
+move (deduplicated in the DB, no repeats). The first time it just learns the state,
+without dumping a giant alert.
 
-También avisa (deduplicado, solo caídas urgentes) cuando a un jugador tuyo le
-conviene salir por precio antes de que baje — el resto lo consultas tú con
-`/vender`.
+It also alerts (deduplicated, urgent drops only) when one of your players is worth
+selling on price before it falls — the rest you check yourself with `/vender`.
 
-## Aviso importante
+## Important notice
 
-Automatizar tu cuenta puede entrar en conflicto con los términos de uso de
-Biwenger. El riesgo real es que te baneen la cuenta, no uno legal, pero:
+Automating your account may conflict with Biwenger's terms of use. The real risk
+is an account ban, not a legal one, but:
 
-- Empieza en modo **dry-run** (solo notifica, no actúa) hasta que confíes en la lógica.
-- Añade jitter aleatorio a los tiempos de las pujas automáticas para no parecer tráfico de bot perfecto.
-- No hagas polling agresivo del mercado; una vez cada pocos minutos es más que suficiente salvo en los últimos minutos antes del cierre.
+- Start in **dry-run** mode (notify only, no actions) until you trust the logic.
+- Add random jitter to automated bid timings so it doesn't look like perfect bot traffic.
+- Don't poll the market aggressively; once every few minutes is more than enough except in the final minutes before close.
 
-Este proyecto es una herramienta personal y educativa, sin relación con Biwenger
-ni con AS. "Biwenger" es marca de sus respectivos propietarios.
+This is a personal, educational tool, unaffiliated with Biwenger or AS.
+"Biwenger" is a trademark of its respective owners.
 
-## Licencia
+## License
 
-[MIT](./LICENSE) © 2026 VerticeDev. Úsalo, modifícalo y compártelo libremente;
-se agradece atribución. Sin garantías (ver la licencia).
+[MIT](./LICENSE) © 2026 VerticeDev. Use it, modify it and share it freely;
+attribution appreciated. No warranty (see the license).
