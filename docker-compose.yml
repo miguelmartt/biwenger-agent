@@ -1,0 +1,15 @@
+services:
+  app:
+    build: .
+    image: biwenger-agent:latest
+    container_name: biwenger-agent
+    restart: unless-stopped
+    env_file: .env
+    # SQLite persiste en un volumen para no perder el histórico al recrear el contenedor.
+    volumes:
+      - biwenger_data:/data
+    # Sin puertos publicados: el agente solo hace peticiones salientes a Biwenger.
+    # No expone nada a la red, así que no hay que tocar el firewall del VPS.
+
+volumes:
+  biwenger_data:

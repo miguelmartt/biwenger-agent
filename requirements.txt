@@ -1,0 +1,8 @@
+requests>=2.31
+python-dotenv>=1.0
+pydantic>=2.6
+SQLAlchemy>=2.0
+APScheduler>=3.10
+PuLP>=2.8
+pandas>=2.2
+tenacity>=8.2
