@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timedelta
 
 from apscheduler.events import EVENT_JOB_ERROR
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -67,11 +68,10 @@ def job_sync_state() -> None:
     for message in services.auto_raise_clauses(client, catalog, team):
         send_message(message)
 
-    # Espía de rivales: avisa de fichajes/ventas NUEVOS (dedup por estado en BD,
-    # así que solo salta cuando algo cambia de verdad, no cada 30 min).
+    # Espía de rivales: detecta y ACUMULA los movimientos (no los envía). Se mandan
+    # juntos en el resumen diario de las 15:00, para no gotear un mensaje por cada uno.
     try:
-        for message in services.rival_moves(client, catalog):
-            send_message(message)
+        services.collect_rival_moves(client, catalog)
     except Exception as exc:  # noqa: BLE001 - no dejes que tumbe el snapshot
         logger.warning("job_sync_state: espía de rivales no concluyente (%s)", exc)
 
@@ -116,6 +116,28 @@ def job_postmatch() -> None:
     learned = services.learn_from_round(client)
     if learned:
         send_message(learned)
+
+
+def job_daily_analysis() -> None:
+    """Recalcula en segundo plano la caché del resumen diario (infracciones del
+    reglamento + zona de castigo). Es la parte pesada; corre cada pocas horas para
+    que el botón /resumendiario responda al instante leyendo la caché."""
+    try:
+        services.refresh_daily_analysis(client)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("job_daily_analysis: no concluyente (%s)", exc)
+
+
+def job_rival_digest() -> None:
+    """Resumen ÚNICO diario (15:00): movimientos de rivales del día + infracciones
+    del reglamento + zona de castigo, en un solo mensaje. Vacía lo acumulado."""
+    try:
+        services.refresh_daily_analysis(client)  # datos frescos justo antes de enviar
+        digest = services.daily_digest(consume=True)
+        if digest:
+            send_message(digest)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("job_rival_digest: resumen diario no concluyente (%s)", exc)
 
 
 def job_token_health() -> None:
@@ -199,6 +221,15 @@ def build_scheduler() -> BlockingScheduler:
     scheduler.add_job(job_sniper, CronTrigger(minute="*"), id="sniper")
     # Salud del token: chequeo diario, avisa con antelación si caducó.
     scheduler.add_job(job_token_health, CronTrigger(hour=8), id="token_health")
+    # Espía de rivales: UN único resumen diario a las 15:00 con todos los
+    # movimientos del día juntos (en vez de un mensaje por cada fichaje/venta).
+    scheduler.add_job(job_rival_digest, CronTrigger(hour=15), id="rival_digest")
+    # Análisis pesado (infracciones + zona de castigo) en segundo plano cada 3h,
+    # para que /resumendiario responda al instante desde la caché.
+    scheduler.add_job(job_daily_analysis, CronTrigger(hour="*/3"), id="daily_analysis")
+    # Y una ejecución inicial poco después de arrancar, para poblar la caché ya.
+    scheduler.add_job(job_daily_analysis, "date",
+                      run_date=datetime.now() + timedelta(seconds=20), id="daily_analysis_boot")
     # Auto-alineación (si está activada): revisa cada hora y pone el once óptimo
     # dentro de la ventana de 4h antes del primer partido de la jornada.
     scheduler.add_job(job_auto_lineup, CronTrigger(minute=0), id="auto_lineup")

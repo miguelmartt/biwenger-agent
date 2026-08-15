@@ -82,12 +82,20 @@ Two switches, **both off by default**. The agent never acts unless you turn them
 
 ### Rival spy (proactive)
 
-On each sync the agent detects rivals' NEW transfers/sales and alerts you once per
-move (deduplicated in the DB, no repeats). The first time it just learns the state,
-without dumping a giant alert.
+Once a day (15:00) the agent sends a **single digest** with all of your rivals'
+transfers/sales for that day, grouped in one message (deduplicated in the DB, no
+repeats) — instead of dripping one message per move. The first time it just learns
+the state, without dumping a giant alert.
 
 It also alerts (deduplicated, urgent drops only) when one of your players is worth
 selling on price before it falls — the rest you check yourself with `/vender`.
+
+**Optional league-rule checks.** If you create `config/league_rules.py` (see
+`config/league_rules.example.py`; it's gitignored, so your rules stay private),
+the agent flags rivals that break your league's agreed rules — clauses below the
+required minimum, a captain over a value cap, too many players from the same club
+— inside that same daily digest. You can also pull the digest on demand with
+`/resumendiario`.
 
 ## Important notice
 

@@ -86,13 +86,21 @@ los enciendas tú:
 
 ### Espía de rivales (proactivo)
 
-En cada sincronización el agente detecta fichajes/ventas NUEVOS de los rivales y
-te avisa una sola vez por movimiento (con deduplicación en BD, sin repetir). La
-primera vez solo aprende el estado, sin soltar un aviso gigante.
+Una vez al día (15:00) el agente te manda un **único resumen** con todos los
+fichajes/ventas de tus rivales de ese día, agrupados en un solo mensaje (con
+deduplicación en BD, sin repetir) — en vez de gotear un mensaje por movimiento.
+La primera vez solo aprende el estado, sin soltar un aviso gigante.
 
 También avisa (deduplicado, solo caídas urgentes) cuando a un jugador tuyo le
 conviene salir por precio antes de que baje — el resto lo consultas tú con
 `/vender`.
+
+**Chequeo de reglas de liga (opcional).** Si creas `config/league_rules.py` (mira
+`config/league_rules.example.py`; está en .gitignore, así que tus reglas quedan
+privadas), el agente marca a los rivales que incumplan las reglas acordadas de tu
+liga — cláusulas por debajo del mínimo, capitán por encima de un tope de valor,
+demasiados jugadores del mismo club — dentro de ese mismo resumen diario. También
+puedes pedirlo cuando quieras con `/resumendiario`.
 
 ## Aviso importante
 

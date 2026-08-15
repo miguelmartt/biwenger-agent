@@ -309,6 +309,36 @@ def detect_rival_moves(current):
     return moves
 
 
+class PendingRivalMove(Base):
+    """Movimientos de rivales detectados durante el día, a la espera del resumen
+    diario. Se van acumulando y se vacían cuando se envía el resumen de las 15:00."""
+    __tablename__ = "pending_rival_moves"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    text: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+def add_pending_rival_moves(texts) -> int:
+    with get_session() as s:
+        for t in texts:
+            s.add(PendingRivalMove(text=t))
+        s.commit()
+    return len(list(texts))
+
+
+def get_pending_rival_moves() -> list[str]:
+    with get_session() as s:
+        rows = s.query(PendingRivalMove).order_by(PendingRivalMove.id).all()
+        return [r.text for r in rows]
+
+
+def clear_pending_rival_moves() -> None:
+    with get_session() as s:
+        s.query(PendingRivalMove).delete()
+        s.commit()
+
+
 def filter_new_live_events(events):
     """De una lista de LivePlayerEvent, devuelve solo los NUEVOS (no avisados aún)
     y los marca como vistos. Evita repetir el mismo evento cada pocos minutos."""

@@ -494,6 +494,71 @@ class BiwengerClient:
             result[int(p["id"])] = {"clause": owner.get("clause"), "buy_price": owner.get("price")}
         return result
 
+    def get_manager_lineup(self, user_id: int) -> dict | None:
+        """Alineación (once + capitán) de un rival, en la medida en que Biwenger la
+        exponga (normalmente cuando la jornada ha empezado o terminado).
+
+        Best-effort: mismo patrón que la lectura de tu propio equipo, pero sobre
+        `/user/{id}`. Devuelve None si Biwenger no la expone (entonces los chequeos
+        que dependen de la alineación simplemente se omiten sin romper nada).
+        """
+        try:
+            data = self._request(
+                "GET", f"{API_BASE}/user/{user_id}",
+                params={"fields": "*,lineup(type,captain,playersID)"},
+            )["data"]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Sin alineación del rival %s: %s", user_id, exc)
+            return None
+        lu = data.get("lineup") or {}
+        ids = list(lu.get("playersID") or [])
+        if not ids:
+            return None
+        return {"player_ids": [int(i) for i in ids],
+                "captain_id": lu.get("captain"),
+                "formation": lu.get("type", "")}
+
+    def get_round_manager_scores(self, round_id: int) -> dict[str, float]:
+        """Puntuación (orientativa) de cada manager en una jornada, reconstruida a
+        partir de su alineación y los puntos de sus jugadores (capitán x2).
+
+        Best-effort: depende de poder leer las alineaciones de los rivales, que
+        Biwenger solo expone cuando la jornada ha empezado/terminado. Devuelve {}
+        si no hay datos suficientes. Es ORIENTATIVO (no incluye bonus como el
+        ariete): sirve para avisar de la zona de castigo, no como verdad oficial.
+        """
+        # Recoge (nombre, lineup) de todos los managers: tú + rivales.
+        rosters: list[tuple[str, dict]] = []
+        try:
+            me = self.get_my_team()
+            if me.lineup and me.lineup.player_ids:
+                rosters.append((me.name, {"player_ids": [int(i) for i in me.lineup.player_ids],
+                                          "captain_id": me.lineup.captain_id}))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Sin tu alineación para la zona de castigo: %s", exc)
+        for m in self.get_league_managers():
+            lu = self.get_manager_lineup(m["id"])
+            if lu:
+                rosters.append((m["name"], lu))
+
+        if len(rosters) < 2:
+            return {}
+
+        all_ids = {pid for _, lu in rosters for pid in lu["player_ids"]}
+        points = self.get_round_player_points(round_id, list(all_ids))
+        if not any((points.get(pid) or {}).get("points") for pid in all_ids):
+            return {}  # la jornada aún no tiene puntos (no se ha jugado)
+
+        scores: dict[str, float] = {}
+        for name, lu in rosters:
+            total = 0.0
+            cap = lu.get("captain_id")
+            for pid in lu["player_ids"]:
+                pts = (points.get(int(pid)) or {}).get("points") or 0
+                total += pts * (2 if cap and int(pid) == int(cap) else 1)
+            scores[name] = total
+        return scores
+
     # ------------------------------------------------------------------ #
     # Escritura de estado (acciones) — respetan DRY_RUN
     # ------------------------------------------------------------------ #

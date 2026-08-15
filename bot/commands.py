@@ -27,6 +27,7 @@ MENU_BUTTONS: list[Button] = [
     ("🕵️ Diferenciales", "cmd:diferenciales"),
     ("🎯 Quiniela", "cmd:quiniela"),
     ("📊 Resumen jornada", "cmd:resumen"),
+    ("📋 Resumen diario", "cmd:resumendiario"),
     ("👥 Mi equipo", "cmd:equipo"),
     ("ℹ️ ¿Qué hace cada cosa?", "cmd:help"),
 ]
@@ -40,6 +41,7 @@ HELP_TEXT = (
     "puntos + bonus si es diferencial).\n"
     "/equipo — tu plantilla y tu saldo de un vistazo.\n"
     "/resumen — cómo te fue en la última jornada (y qué aprendió el modelo).\n"
+    "/resumendiario — movimientos de rivales del día + infracciones del reglamento.\n"
     "\n"
     "💰 MERCADO Y ECONOMÍA\n"
     "/mercado — chollos, tendencias de precio y cláusulas, con botones para fichar.\n"
@@ -69,6 +71,7 @@ COMMAND_MENU = [
     ("vender", "A quién vender ya (timing)"),
     ("quiniela", "Pronóstico 1X2 de la jornada"),
     ("resumen", "Resumen de la última jornada"),
+    ("resumendiario", "Movimientos rivales + infracciones"),
     ("objetivos", "Tus auto-pujas programadas"),
     ("auto", "Activa/desactiva automatizaciones"),
     ("equipo", "Tu plantilla y saldo"),
@@ -115,6 +118,11 @@ def _cmd_differentials(client: BiwengerClient) -> tuple[str, list[Button] | None
 
 def _cmd_sell(client: BiwengerClient) -> tuple[str, list[Button] | None]:
     return services.sell_timing_message(client)
+
+
+def _cmd_daily_digest(client: BiwengerClient) -> tuple[str, list[Button] | None]:
+    text = services.daily_digest(client, consume=False)
+    return (text or "📋 Sin novedades hoy: ni movimientos de rivales ni infracciones detectadas."), None
 
 
 def _cmd_learning(_: BiwengerClient) -> tuple[str, list[Button] | None]:
@@ -168,6 +176,7 @@ HANDLERS = {
     "/calendario": _cmd_calendar,
     "/diferenciales": _cmd_differentials,
     "/vender": _cmd_sell,
+    "/resumendiario": _cmd_daily_digest,
     "/quiniela": _cmd_quiniela,
     "/resumen": _cmd_summary,
     "/objetivos": _cmd_targets,

@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from core.models import MarketListing, Player, Position, TeamState
-from core.services import differentials_message, rival_moves
+from core.services import collect_rival_moves, daily_digest, differentials_message, rival_moves
 from data.db import detect_rival_moves, init_db
 
 
@@ -95,6 +95,32 @@ def test_rival_moves_service_names_players():
     catalog[3] = _p(3, "Nuevo")
     msgs = rival_moves(client, catalog)
     assert msgs and "Pepe" in msgs[0] and "Nuevo" in msgs[0] and "Fichado" in msgs[0]
+
+
+def test_daily_digest_accumulates_and_consumes():
+    init_db()
+    mine = [_p(1, "Yo")]
+    rivals = {10: {"name": "Pepe", "players": [1, 2]}, 11: {"name": "Ana", "players": [5]}}
+    catalog = {1: _p(1, "Yo"), 2: _p(2, "Fichado"), 5: _p(5, "OtroA"), 7: _p(7, "OtroB")}
+    client = _Client(mine, [], rivals)
+
+    # Siembra: primera detección no acumula nada.
+    assert collect_rival_moves(client, catalog) == 0
+    # Cambios: Pepe ficha al 7 y suelta al 2; Ana suelta al 5.
+    rivals[10]["players"] = [1, 7]
+    rivals[11]["players"] = []
+    assert collect_rival_moves(client, catalog) == 2  # 2 managers con cambios
+
+    # El botón (consume=False) muestra pero NO vacía.
+    view = daily_digest(client, catalog, consume=False)
+    assert view and "Movimientos de rivales de hoy" in view
+    assert "Pepe" in view and "Ana" in view
+    assert daily_digest(client, catalog, consume=False) is not None  # sigue ahí
+
+    # El resumen de las 15:00 (consume=True) vacía lo acumulado.
+    sent = daily_digest(client, catalog, consume=True)
+    assert sent is not None
+    assert daily_digest(client, catalog, consume=False) is None  # ya no queda nada
 
 
 if __name__ == "__main__":

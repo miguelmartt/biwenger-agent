@@ -569,6 +569,86 @@ def rival_moves(client: BiwengerClient, catalog: dict[int, Player] | None = None
     return messages
 
 
+def collect_rival_moves(client: BiwengerClient, catalog: dict[int, Player] | None = None) -> int:
+    """Detecta los movimientos de rivales y los ACUMULA (no los envía) para el
+    resumen diario. Se llama en cada sincronización; el envío es una vez al día."""
+    from data.db import add_pending_rival_moves
+
+    moves = rival_moves(client, catalog)  # detecta, actualiza estado y devuelve la lista
+    if not moves:
+        return 0
+    # Guarda el texto limpio (sin el prefijo individual) para el resumen.
+    texts = [m.replace("🕵️ Movimiento rival — ", "").rstrip(".") for m in moves]
+    add_pending_rival_moves(texts)
+    return len(texts)
+
+
+def refresh_daily_analysis(client: BiwengerClient, catalog: dict[int, Player] | None = None) -> None:
+    """Calcula (en segundo plano) las infracciones del reglamento y la zona de
+    castigo, y las guarda en caché. Es la parte PESADA (muchas peticiones), por eso
+    se hace en un job periódico y NO al pulsar el botón."""
+    import json
+
+    from compliance.checker import compliance_lines, punishment_report
+    from data.db import set_setting
+
+    catalog = catalog if catalog is not None else client.get_all_players()
+    try:
+        lines = compliance_lines(client, catalog)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("refresh_daily_analysis: infracciones fallaron (%s)", exc)
+        lines = []
+    set_setting("cache_compliance", json.dumps(lines, ensure_ascii=False))
+
+    try:
+        pun = punishment_report(client, catalog) or ""
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("refresh_daily_analysis: zona de castigo falló (%s)", exc)
+        pun = ""
+    set_setting("cache_punishment", pun)
+
+
+def daily_digest(client: BiwengerClient | None = None, catalog: dict[int, Player] | None = None,
+                 consume: bool = False) -> str | None:
+    """Resumen diario, LEÍDO DE CACHÉ (instantáneo): movimientos de rivales
+    acumulados del día + infracciones del reglamento + zona de castigo. Devuelve el
+    texto o None si no hay nada.
+
+    - `consume=True` (job de las 15:00): vacía los movimientos acumulados tras leerlos.
+    - `consume=False` (botón bajo demanda): solo muestra, no vacía nada.
+    """
+    import json
+
+    from data.db import (clear_pending_rival_moves, get_pending_rival_moves,
+                         get_setting)
+
+    parts: list[str] = []
+
+    moves = get_pending_rival_moves()
+    if moves:
+        parts.append("🕵️ Movimientos de rivales de hoy:\n" +
+                     "\n".join(f"  • {m}" for m in moves))
+
+    try:
+        infractions = json.loads(get_setting("cache_compliance") or "[]")
+    except Exception:  # noqa: BLE001
+        infractions = []
+    if infractions:
+        parts.append("🚨 Posibles infracciones del reglamento:\n" +
+                     "\n".join(f"  • {x}" for x in infractions))
+
+    punishment = get_setting("cache_punishment") or ""
+    if punishment:
+        parts.append(punishment)
+
+    if consume and moves:
+        clear_pending_rival_moves()
+
+    if not parts:
+        return None
+    return "\n\n".join(parts)
+
+
 def quiniela_message(client: BiwengerClient) -> str:
     """Pronóstico 1X2 de todos los partidos de la jornada (y lo guarda para evaluarlo)."""
     from quiniela.predictor import quiniela  # import local para evitar ciclos
