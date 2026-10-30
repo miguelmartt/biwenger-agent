@@ -17,6 +17,11 @@ CAPTAIN_MAX_VALUE = 7_500_000
 # Máximo de jugadores del mismo club de LaLiga en el once titular.
 MAX_PLAYERS_PER_CLUB = 3
 
+# Chequeo de cláusulas por debajo del mínimo. En Biwenger la cláusula base la fija
+# la configuración de la liga (no cada manager), así que suele marcar a casi todos
+# por un tema de config, no por trampas. Ponlo en True solo si quieres ese aviso.
+CLAUSE_CHECK_ENABLED = False
+
 # Tramos de cláusula MÍNIMA por valor de mercado (VM) del jugador:
 # lista de (límite_superior_VM, multiplicador). Se aplica el primer tramo cuyo
 # límite superior sea >= al VM del jugador.
@@ -28,6 +33,13 @@ CLAUSE_MIN_TIERS = [
 
 # Las cláusulas empiezan a exigirse DESPUÉS de esta jornada (0 = desde el principio).
 CLAUSE_RULES_FROM_ROUND = 2
+
+# "Solo casos gordos": muchas cláusulas quedan por debajo del mínimo de forma
+# sistemática (el valor sube con el tiempo). Para no soltar un tocho, solo se
+# avisa de las flagrantes: hueco respecto al mínimo >= CLAUSE_MIN_GAP €, y como
+# mucho CLAUSE_MAX_PER_MANAGER por rival. Pon CLAUSE_MIN_GAP = 0 para avisar de todas.
+CLAUSE_MIN_GAP = 3_000_000
+CLAUSE_MAX_PER_MANAGER = 3
 
 # Zona de castigo: multa en € por PUESTO de la clasificación de la jornada.
 # Ej. liga de 10: los 3 últimos pagan. En empates dentro de la zona, la suma de

@@ -634,8 +634,12 @@ def daily_digest(client: BiwengerClient | None = None, catalog: dict[int, Player
     except Exception:  # noqa: BLE001
         infractions = []
     if infractions:
-        parts.append("🚨 Posibles infracciones del reglamento:\n" +
-                     "\n".join(f"  • {x}" for x in infractions))
+        shown = infractions[:15]  # las más graves (ya vienen ordenadas)
+        body = "\n".join(f"  • {x}" for x in shown)
+        extra = len(infractions) - len(shown)
+        if extra > 0:
+            body += f"\n  …y {extra} más"
+        parts.append("🚨 Posibles infracciones del reglamento:\n" + body)
 
     punishment = get_setting("cache_punishment") or ""
     if punishment:

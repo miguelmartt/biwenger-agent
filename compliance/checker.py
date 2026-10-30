@@ -51,6 +51,8 @@ def required_min_clause(vm: int, tiers) -> int:
 
 def check_low_clauses(client, catalog, rules) -> list[str]:
     """Jugadores de rivales con la cláusula por debajo del mínimo del reglamento."""
+    if not getattr(rules, "CLAUSE_CHECK_ENABLED", True):
+        return []  # desactivado: la cláusula base es config de la liga, no del manager
     tiers = getattr(rules, "CLAUSE_MIN_TIERS", None)
     if not tiers:
         return []
@@ -63,25 +65,38 @@ def check_low_clauses(client, catalog, rules) -> list[str]:
     if from_round and current_round and current_round <= from_round:
         return []
 
-    out: list[str] = []
+    # Solo "casos gordos": hueco mínimo (en €) y tope por rival, para no soltar
+    # un tocho con toda la plantilla (las cláusulas bajas son sistemáticas).
+    min_gap = getattr(rules, "CLAUSE_MIN_GAP", 0)
+    max_per_manager = getattr(rules, "CLAUSE_MAX_PER_MANAGER", 0)
+
+    found: list[tuple[int, str]] = []  # (hueco, texto) global, para ordenar
     for m in client.get_league_managers():
         try:
             clauses = client.get_manager_clauses(m["id"])
         except Exception as exc:  # noqa: BLE001
             logger.warning("Sin cláusulas de %s: %s", m.get("name"), exc)
             continue
+        manager_hits: list[tuple[int, str]] = []
         for pid, info in clauses.items():
             player = catalog.get(int(pid))
             clause = info.get("clause")
             if player is None or not clause:
                 continue
             req = required_min_clause(player.price, tiers)
-            if clause < req:
-                out.append(
-                    f"{m['name']}: {player.name} con cláusula {_fmt(clause)}€ "
-                    f"(mínimo del reglamento {_fmt(req)}€)"
-                )
-    return out
+            gap = req - int(clause)
+            if gap <= 0 or gap < min_gap:  # cumple o el hueco es pequeño -> ignora
+                continue
+            manager_hits.append((gap,
+                f"{m['name']}: {player.name} con cláusula {_fmt(clause)}€ "
+                f"(mínimo del reglamento {_fmt(req)}€)"))
+        manager_hits.sort(key=lambda x: x[0], reverse=True)
+        if max_per_manager:
+            manager_hits = manager_hits[:max_per_manager]
+        found.extend(manager_hits)
+
+    found.sort(key=lambda x: x[0], reverse=True)  # las más flagrantes primero
+    return [t for _gap, t in found]
 
 
 def check_expensive_captains(client, catalog, rules) -> list[str]:

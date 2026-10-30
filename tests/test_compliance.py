@@ -18,6 +18,8 @@ RULES = SimpleNamespace(
     MAX_PLAYERS_PER_CLUB=3,
     CLAUSE_MIN_TIERS=[(2_000_000, 2.5), (10_000_000, 2.0), (float("inf"), 1.5)],
     CLAUSE_RULES_FROM_ROUND=2,
+    CLAUSE_MIN_GAP=3_000_000,
+    CLAUSE_MAX_PER_MANAGER=3,
 )
 
 
@@ -60,6 +62,24 @@ def test_low_clause_flagged_and_ok_ignored():
     }}
     out = check_low_clauses(_Client(managers, clauses=clauses), catalog, RULES)
     assert len(out) == 1 and "Caro" in out[0] and "Pepe" in out[0]
+
+
+def test_low_clause_ignores_small_gaps_and_caps_per_manager():
+    # 5 jugadores de 5M€ (mínimo 10M) con huecos distintos; solo cuentan los gordos
+    # (hueco >= 3M) y como mucho 3 por rival.
+    catalog = {i: _p(i, f"J{i}", 5_000_000) for i in range(1, 6)}
+    managers = [{"id": 10, "name": "Pepe"}]
+    clauses = {10: {
+        1: {"clause": 9_500_000},  # hueco 0,5M -> pequeño, IGNORAR
+        2: {"clause": 3_000_000},  # hueco 7M   -> gordo
+        3: {"clause": 4_000_000},  # hueco 6M   -> gordo
+        4: {"clause": 5_000_000},  # hueco 5M   -> gordo
+        5: {"clause": 6_000_000},  # hueco 4M   -> gordo, pero cae por el tope de 3
+    }}
+    out = check_low_clauses(_Client(managers, clauses=clauses), catalog, RULES)
+    assert len(out) == 3                 # tope por rival
+    assert all("J1" not in x for x in out)  # el hueco pequeño no aparece
+    assert "J2" in out[0]                # el más gordo, primero
 
 
 def test_low_clause_skipped_before_active_round():

@@ -28,18 +28,50 @@ def _inline_keyboard(buttons: list[Button] | None) -> dict | None:
     return {"inline_keyboard": [[{"text": t, "callback_data": d}] for t, d in buttons]}
 
 
+# Telegram rechaza mensajes de más de 4096 caracteres; troceamos por debajo.
+TELEGRAM_MAX = 4000
+
+
+def _split_text(text: str, limit: int = TELEGRAM_MAX) -> list[str]:
+    """Parte un texto largo en trozos <= limit, respetando saltos de línea (y, si
+    una sola línea es enorme, la corta en crudo)."""
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    current = ""
+    for line in text.split("\n"):
+        while len(line) > limit:  # una línea gigante: córtala en crudo
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(line[:limit])
+            line = line[limit:]
+        add = (current + "\n" + line) if current else line
+        if len(add) > limit:
+            chunks.append(current)
+            current = line
+        else:
+            current = add
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def send_message(text: str, buttons: list[Button] | None = None) -> None:
     base = _base()
     if not base or not settings.telegram_chat_id:
         logger.warning("Telegram no configurado; mensaje no enviado:\n%s", text)
         return
-    payload = {"chat_id": settings.telegram_chat_id, "text": text}
+    parts = _split_text(text)
     kb = _inline_keyboard(buttons)
-    if kb:
-        payload["reply_markup"] = kb
-    resp = requests.post(f"{base}/sendMessage", json=payload, timeout=10)
-    if resp.status_code != 200:
-        logger.error("Fallo enviando mensaje a Telegram: %s", resp.text[:200])
+    for i, part in enumerate(parts):
+        payload = {"chat_id": settings.telegram_chat_id, "text": part}
+        # Los botones solo en el último trozo.
+        if kb and i == len(parts) - 1:
+            payload["reply_markup"] = kb
+        resp = requests.post(f"{base}/sendMessage", json=payload, timeout=10)
+        if resp.status_code != 200:
+            logger.error("Fallo enviando mensaje a Telegram: %s", resp.text[:200])
 
 
 def answer_callback_query(callback_id: str, text: str | None = None) -> None:
