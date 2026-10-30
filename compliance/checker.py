@@ -59,7 +59,7 @@ def check_low_clauses(client, catalog, rules) -> list[str]:
     # ¿Ya se exigen cláusulas? (empiezan después de cierta jornada).
     from_round = getattr(rules, "CLAUSE_RULES_FROM_ROUND", 0)
     try:
-        current_round = client.get_current_round_id() or 0
+        current_round = client.get_round_number(client.get_active_round_id())  # nº de jornada, no id
     except Exception:  # noqa: BLE001
         current_round = 0
     if from_round and current_round and current_round <= from_round:
@@ -185,15 +185,16 @@ def punishment_report(client, catalog) -> str | None:
     if not fines:
         return None
     try:
-        round_id = client.get_current_round_id()
+        round_id = client.get_recent_round_id()  # la que ya tiene puntos
+        round_no = client.get_round_number(round_id)
     except Exception:  # noqa: BLE001
-        round_id = None
+        round_id, round_no = None, 0
     if not round_id:
         return None
-    # Margen tras el reinicio de la 2ª vuelta: sin sanciones esas jornadas.
+    # Margen tras el reinicio de la 2ª vuelta: sin sanciones esas jornadas (números de jornada).
     reset = getattr(rules, "RESET_ROUND", 0)
     margin = getattr(rules, "PUNISHMENT_MARGIN_AFTER_RESET", 0)
-    if reset and margin and reset <= round_id < reset + margin:
+    if reset and margin and reset <= round_no < reset + margin:
         return None
     try:
         scores = client.get_round_manager_scores(round_id)

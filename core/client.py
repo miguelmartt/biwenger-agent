@@ -25,6 +25,8 @@ confiar en ellas del todo.
 from __future__ import annotations
 
 import logging
+import re
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -47,6 +49,24 @@ logger = logging.getLogger(__name__)
 API_BASE = "https://biwenger.as.com/api/v2"
 CF_BASE = "https://cf.biwenger.com/api/v2"
 COMPETITION = "la-liga"
+WEB_URL = "https://biwenger.as.com/"
+# La web carga su bundle desde cdn.biwenger.com/app/v<versión>/…: ese número es el X-Version vigente.
+APP_VERSION_RE = re.compile(r"cdn\.biwenger\.com/app/v(\d+)")
+# Los datos de la competición son pesados y varios jobs los piden seguidos: se reusan un minuto.
+COMPETITION_TTL = 60
+
+
+def detect_app_version(session: requests.Session | None = None) -> str | None:
+    """La versión de la app que sirve ahora la web de Biwenger, o None si no se puede leer."""
+    try:
+        resp = (session or requests).get(
+            WEB_URL, timeout=15, headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html"}
+        )
+    except requests.RequestException as exc:
+        logger.warning("No pude leer la web de Biwenger para ver su versión: %s", exc)
+        return None
+    match = APP_VERSION_RE.search(resp.text or "")
+    return match.group(1) if match else None
 
 
 class BiwengerAuthError(RuntimeError):
@@ -86,7 +106,9 @@ class BiwengerClient:
         # caliente vía /token) y si no, en el .env.
         self._token: str | None = self._active_token()
         self._manual_token = bool(self._token)
-        self._app_version = app_version or settings.biwenger_app_version or "631"
+        # La versión detectada y guardada en la BD manda sobre la del .env, que se queda vieja.
+        self._app_version = app_version or self._stored_app_version() or settings.biwenger_app_version or "631"
+        self._competition_cache: tuple[float, dict] | None = None
         self._league_id = league_id or settings.biwenger_league_id
         self._team_id = team_id or settings.biwenger_user_id  # X-User = id del equipo
         self._account_id: int | None = None
@@ -110,6 +132,42 @@ class BiwengerClient:
             self._token = active
             self._manual_token = True
             self._session.headers.update(self._base_headers())
+
+    @staticmethod
+    def _stored_app_version() -> str | None:
+        try:
+            from data.db import get_setting
+            return get_setting("biwenger_app_version")
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _sync_app_version(self) -> None:
+        """Si otra sesión (el bot o el scheduler) ya detectó una versión nueva, la adopta."""
+        stored = self._stored_app_version()
+        if stored and stored != self._app_version:
+            self._app_version = stored
+            self._session.headers.update(self._base_headers())
+
+    def _adopt_new_app_version(self) -> bool:
+        """Biwenger ha rechazado la versión: lee la nueva de su web y la adopta. True si cambió."""
+        detected = detect_app_version(self._session)
+        if not detected or detected == str(self._app_version):
+            return False
+        old, self._app_version = self._app_version, detected
+        self._session.headers.update(self._base_headers())
+        try:
+            from data.db import set_setting
+            set_setting("biwenger_app_version", detected)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("No pude guardar la versión nueva de la app: %s", exc)
+        logger.info("Biwenger actualizó su app: X-Version %s -> %s", old, detected)
+        try:
+            from bot.telegram_bot import send_message
+            send_message(f"🔄 Biwenger ha actualizado su app (versión {old} → {detected}). "
+                         "Me he adaptado solo; no tienes que hacer nada.")
+        except Exception:  # noqa: BLE001
+            pass
+        return True
 
     def update_token(self, new_token: str) -> None:
         """Guarda un token nuevo (renovación en caliente desde Telegram)."""
@@ -200,12 +258,15 @@ class BiwengerClient:
     )
     def _request(self, method: str, url: str, **kwargs):
         self._sync_token()  # adopta el token si lo renovaste con /token (otra sesión)
+        self._sync_app_version()
         self._ensure_auth()
         resp = self._session.request(method, url, timeout=15, **kwargs)
-        if resp.status_code == 400 and "version" in resp.text.lower():
+        if _old_version(resp) and self._adopt_new_app_version():
+            resp = self._session.request(method, url, timeout=15, **kwargs)
+        if _old_version(resp):
             raise BiwengerVersionError(
-                f"Biwenger rechaza X-Version={self._app_version}. "
-                "Actualiza BIWENGER_APP_VERSION al número actual de la app."
+                f"Biwenger rechaza X-Version={self._app_version} y no he podido leer la nueva de su web. "
+                "Actualiza BIWENGER_APP_VERSION al número de cdn.biwenger.com/app/vXXX."
             )
         if resp.status_code == 401:
             if self._manual_token:
@@ -291,13 +352,9 @@ class BiwengerClient:
         calcula Biwenger). Cruza ambos para poner a cada jugador la dificultad de
         su próximo partido.
         """
-        data = self._request(
-            "GET",
-            f"{API_BASE}/competitions/{COMPETITION}/data",
-            params={"lang": "es", "score": 5},
-        )["data"]
+        data = self._competition_data()
 
-        difficulty_by_team = _difficulty_by_team(data.get("teams", {}))
+        difficulty_by_team = _difficulty_by_team(data.get("teams", {}), _active_difficulty(data))
         raw_players = data.get("players") or {}
 
         # Titularidad: nº de partidos jugados esta temporada respecto al máximo de
@@ -329,12 +386,66 @@ class BiwengerClient:
         competición que ya alimenta el catálogo (dato interno de Biwenger, sin
         webs externas). Es la base del planificador de calendario.
         """
+        data = self._competition_data()
+        return _team_fixtures(data.get("teams", {}), weeks, _active_difficulty(data))
+
+    def _competition_data(self) -> dict:
+        """Datos de LaLiga (jugadores, equipos, temporada y jornada activa), con un minuto de caché."""
+        now = time.monotonic()
+        if self._competition_cache and now - self._competition_cache[0] < COMPETITION_TTL:
+            return self._competition_cache[1]
         data = self._request(
-            "GET",
-            f"{API_BASE}/competitions/{COMPETITION}/data",
-            params={"lang": "es", "score": 5},
+            "GET", f"{API_BASE}/competitions/{COMPETITION}/data", params={"lang": "es", "score": 5}
         )["data"]
-        return _team_fixtures(data.get("teams", {}), weeks)
+        self._competition_cache = (now, data)
+        return data
+
+    # ------------------------------------------------------------------ #
+    # Jornadas
+    # ------------------------------------------------------------------ #
+    # OJO: rounds/league NO sirve para saber qué jornada toca: entre jornadas apunta a la ya
+    # terminada y a veces a una "Jornada N (aplazada)". La fiable es activeEvents de la competición.
+    def get_active_round(self) -> dict | None:
+        """La jornada de LaLiga que se está jugando o la siguiente: {id, name, status, start, games}."""
+        events = self._competition_data().get("activeEvents") or []
+        return next((e for e in events if e.get("type") == "round"), None)
+
+    def get_active_round_id(self) -> int | None:
+        active = self.get_active_round()
+        return int(active["id"]) if active else self._league_round_id()
+
+    def get_recent_round_id(self, now_epoch: int | None = None) -> int | None:
+        """La jornada cuyos puntos tiene sentido mirar: la activa si ya ha empezado; si no, la
+        última terminada (sin contar las aplazadas). Para el resumen y el aprendizaje del lunes."""
+        now_epoch = now_epoch or int(time.time())
+        active = self.get_active_round()
+        if active and (active.get("start") or 0) and active["start"] <= now_epoch:
+            return int(active["id"])
+        active_id = int(active["id"]) if active else None
+        rounds = (self._competition_data().get("season") or {}).get("rounds") or []
+        done = [int(r["id"]) for r in rounds
+                if r.get("status") == "finished" and "aplazad" not in (r.get("name") or "").lower()
+                and (active_id is None or int(r["id"]) < active_id)]
+        return max(done) if done else self._league_round_id()
+
+    def get_current_round_id(self) -> int | None:
+        """Compatibilidad: la jornada activa (la que se juega o viene)."""
+        return self.get_active_round_id()
+
+    def get_round_number(self, round_id: int | None) -> int:
+        """El número de jornada ("Jornada 11" → 11) de un id interno de Biwenger; 0 si no se sabe.
+        Las reglas de la liga hablan de números de jornada, no de ids (4909…)."""
+        if not round_id:
+            return 0
+        active = self.get_active_round() or {}
+        rounds = list((self._competition_data().get("season") or {}).get("rounds") or []) + [active]
+        name = next((r.get("name") or "" for r in rounds if str(r.get("id")) == str(round_id)), "")
+        match = re.search(r"(\d+)", name)
+        return int(match.group(1)) if match else 0
+
+    def _league_round_id(self) -> int | None:
+        data = self._request("GET", f"{API_BASE}/rounds/league")["data"]
+        return (data.get("round") or {}).get("id")
 
     def get_offers(self) -> list[dict]:
         """Ofertas recibidas por tus jugadores (otros managers quieren comprarte)."""
@@ -347,12 +458,14 @@ class BiwengerClient:
         Combina rounds/league (id de la jornada) + rounds/la-liga/{id} (games con
         la dificultad que calcula Biwenger). Base del pronóstico de la quiniela.
         """
-        round_id = self.get_current_round_id()
-        if not round_id:
-            return []
-        data = self._request(
-            "GET", f"{API_BASE}/rounds/{COMPETITION}/{round_id}", params={"lang": "es", "score": 5}
-        )["data"]
+        data = self.get_active_round()
+        if data is None:
+            round_id = self._league_round_id()
+            if not round_id:
+                return []
+            data = self._request(
+                "GET", f"{API_BASE}/rounds/{COMPETITION}/{round_id}", params={"lang": "es", "score": 5}
+            )["data"]
 
         def _diff(side: dict):
             d = (side or {}).get("difficulty") or {}
@@ -384,10 +497,6 @@ class BiwengerClient:
                 )
             )
         return fixtures
-
-    def get_current_round_id(self) -> int | None:
-        data = self._request("GET", f"{API_BASE}/rounds/league")["data"]
-        return (data.get("round") or {}).get("id")
 
     def get_my_live_events(self, my_player_ids: list[int]) -> list[LivePlayerEvent]:
         """Eventos (goles, asistencias, tarjetas) de TUS jugadores en la jornada actual.
@@ -467,6 +576,22 @@ class BiwengerClient:
             results.append({"home": home.get("name", "?"), "away": away.get("name", "?"),
                             "home_score": hs, "away_score": as_, "pick": pick})
         return results
+
+    def get_standings(self) -> list[dict]:
+        """Clasificación de la liga, por posición: {id, name, points, position, team_value,
+        team_value_inc, me}. `me` marca tu equipo."""
+        data = self._request(
+            "GET", f"{API_BASE}/league", params={"include": "all", "fields": "*,standings"}
+        )["data"]
+        rows = []
+        for s in data.get("standings", []) or []:
+            rows.append({
+                "id": s.get("id"), "name": s.get("name", "?"),
+                "points": int(s.get("points") or 0), "position": int(s.get("position") or 0),
+                "team_value": int(s.get("teamValue") or 0), "team_value_inc": int(s.get("teamValueInc") or 0),
+                "me": str(s.get("id")) == str(self._team_id),
+            })
+        return sorted(rows, key=lambda r: r["position"] or 999)
 
     def get_league_managers(self) -> list[dict]:
         """Managers de la liga (id, nombre), excluyéndote a ti."""
@@ -651,12 +776,37 @@ class BiwengerClient:
 # ---------------------------------------------------------------------- #
 # Mapeo JSON -> modelos
 # ---------------------------------------------------------------------- #
-def _difficulty_by_team(teams: dict) -> dict[int, float]:
+def _active_difficulty(data: dict) -> dict[int, dict[int, float]]:
+    """Dificultad de cada equipo en los partidos de la jornada activa: {game_id: {team_id: rating}}.
+
+    Biwenger dejó de mandar la dificultad en `nextGames` (ahora solo trae los ids de los
+    equipos); sigue viniendo en los partidos de `activeEvents`.
+    """
+    result: dict[int, dict[int, float]] = {}
+    for event in data.get("activeEvents") or []:
+        for game in event.get("games") or []:
+            for side in ("home", "away"):
+                s = game.get(side) or {}
+                diff = s.get("difficulty")
+                if s.get("id") is not None and isinstance(diff, dict) and diff.get("rating") is not None:
+                    result.setdefault(game.get("id"), {})[int(s["id"])] = float(diff["rating"])
+    return result
+
+
+def _game_rating(game: dict, team_id: int, known: dict[int, dict[int, float]] | None) -> float | None:
+    """La dificultad de `game` para `team_id`: la que venga en el partido o, si no, la de la jornada activa."""
+    side = game.get("home") if (game.get("home") or {}).get("id") == team_id else game.get("away")
+    diff = (side or {}).get("difficulty")
+    if isinstance(diff, dict) and diff.get("rating") is not None:
+        return float(diff["rating"])
+    return (known or {}).get(game.get("id"), {}).get(team_id)
+
+
+def _difficulty_by_team(teams: dict, known: dict[int, dict[int, float]] | None = None) -> dict[int, float]:
     """Mapa teamID -> dificultad (0-100) de su próximo partido, según Biwenger.
 
-    Cada equipo trae `nextGames`; el primero es el próximo. Dentro, el partido
-    tiene `home` y `away`, y cada lado su propia `difficulty.rating`. Se toma
-    la del lado que corresponde a este equipo.
+    Cada equipo trae `nextGames`; el primero es el próximo. Se toma la dificultad del
+    lado que corresponde a este equipo (o la de la jornada activa, ver `_active_difficulty`).
     """
     result: dict[int, float] = {}
     for tid, tdata in (teams or {}).items():
@@ -665,14 +815,9 @@ def _difficulty_by_team(teams: dict) -> dict[int, float]:
             games = tdata.get("nextGames") or []
             if not games:
                 continue
-            game = games[0]
-            for side in ("home", "away"):
-                s = game.get(side) or {}
-                if s.get("id") == team_id and isinstance(s.get("difficulty"), dict):
-                    rating = s["difficulty"].get("rating")
-                    if rating is not None:
-                        result[team_id] = float(rating)
-                    break
+            rating = _game_rating(games[0], team_id, known)
+            if rating is not None:
+                result[team_id] = rating
         except (ValueError, KeyError, TypeError):
             continue
     return result
@@ -689,7 +834,8 @@ def _team_name_by_id(teams: dict) -> dict[int, str]:
     return names
 
 
-def _team_fixtures(teams: dict, weeks: int) -> dict[int, list[UpcomingFixture]]:
+def _team_fixtures(teams: dict, weeks: int,
+                   known: dict[int, dict[int, float]] | None = None) -> dict[int, list[UpcomingFixture]]:
     """Convierte `nextGames` de cada equipo en una lista de próximos partidos.
 
     Para cada partido, determina de qué lado juega este equipo (home/away),
@@ -710,12 +856,8 @@ def _team_fixtures(teams: dict, weeks: int) -> dict[int, list[UpcomingFixture]]:
                 continue
             side = "home" if (game.get("home") or {}).get("id") == team_id else "away"
             other = "away" if side == "home" else "home"
-            me = game.get(side) or {}
             opp = game.get(other) or {}
-            rating = None
-            diff = me.get("difficulty")
-            if isinstance(diff, dict):
-                rating = diff.get("rating")
+            rating = _game_rating(game, team_id, known)
             opp_name = opp.get("name") or names.get(opp.get("id"), "?")
             runs.append(
                 UpcomingFixture(
@@ -787,3 +929,8 @@ def _extract_fitness(raw) -> list[int]:
                 if isinstance(val, (int, float)):
                     points.append(int(val))
     return points
+
+
+def _old_version(resp) -> bool:
+    """Biwenger responde 400 «Old version» cuando la X-Version ya no vale."""
+    return resp.status_code == 400 and "version" in (resp.text or "").lower()

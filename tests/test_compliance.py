@@ -40,8 +40,15 @@ class _Client:
         self._lineups = lineups or {}
         self._round_id = round_id
 
-    def get_current_round_id(self):
+    # En el falso, el id de jornada es su número (en Biwenger serían 4909 → «Jornada 11»).
+    def get_active_round_id(self):
         return self._round_id
+
+    def get_recent_round_id(self):
+        return self._round_id
+
+    def get_round_number(self, round_id):
+        return round_id or 0
 
     def get_league_managers(self):
         return self._managers

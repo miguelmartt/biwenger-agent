@@ -5,7 +5,7 @@ visitante y dificultad propia de cada partido, y (b) el mensaje separa rachas
 fáciles de rachas duras para ayudar a decidir a quién capitanear o vender."""
 from __future__ import annotations
 
-from core.client import _team_fixtures
+from core.client import _active_difficulty, _difficulty_by_team, _team_fixtures
 from core.models import Player, Position, TeamState, UpcomingFixture
 from core.services import fixture_calendar_message
 
@@ -30,6 +30,24 @@ def test_team_fixtures_parses_side_opponent_and_difficulty():
     assert runs[1].difficulty == 75.0
     # Un equipo sin nextGames no aparece en el mapa.
     assert 20 not in out
+
+
+def test_difficulty_falls_back_to_the_active_round():
+    # Como manda Biwenger ahora: nextGames solo con ids y la dificultad en activeEvents.
+    data = {
+        "teams": {"10": {"name": "MiEquipo", "nextGames": [
+            {"id": 501, "home": {"id": 10}, "away": {"id": 20}},
+        ]}, "20": {"name": "Rival", "nextGames": []}},
+        "activeEvents": [{"type": "round", "games": [
+            {"id": 501, "home": {"id": 10, "difficulty": {"rating": 21}},
+             "away": {"id": 20, "difficulty": {"rating": 54}}},
+        ]}],
+    }
+    known = _active_difficulty(data)
+    assert known == {501: {10: 21.0, 20: 54.0}}
+    assert _team_fixtures(data["teams"], 5, known)[10][0].difficulty == 21.0
+    assert _team_fixtures(data["teams"], 5, known)[10][0].opponent == "Rival"
+    assert _difficulty_by_team(data["teams"], known) == {10: 21.0}
 
 
 def test_team_fixtures_respects_weeks_limit():

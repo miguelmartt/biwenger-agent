@@ -763,7 +763,7 @@ def learn_from_round(client: BiwengerClient) -> str | None:
     from data.db import record_actuals
     from learning.tuner import retune
 
-    round_id = client.get_current_round_id()
+    round_id = client.get_recent_round_id()
     if not round_id:
         return None
     # Puntos reales de los jugadores de los que teníamos predicción.
@@ -788,7 +788,7 @@ def postmatch_message(client: BiwengerClient) -> str:
     """Resumen de la jornada: puntos de tu equipo, MVP, capitán y acierto de quiniela."""
     from data.db import load_quiniela
 
-    round_id = client.get_current_round_id()
+    round_id = client.get_recent_round_id()
     if not round_id:
         return "Aún no hay datos de jornada."
 
