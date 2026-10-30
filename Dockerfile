@@ -5,8 +5,9 @@ WORKDIR /app
 # Zona horaria de España para que los cron de alineación/mercado cuadren.
 ENV TZ=Europe/Madrid
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Versiones exactas (requirements.lock): una dependencia que cambia sola no puede romper el bot.
+COPY requirements.lock .
+RUN pip install --no-cache-dir -r requirements.lock
 
 COPY . .
 

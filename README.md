@@ -37,7 +37,7 @@ file (`core/client.py`) precisely so that's the only place you need to touch.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.lock   # the exact versions the Docker image uses
 cp .env.example .env   # fill in your credentials and league IDs
 python main.py --once  # run one manual cycle (no automated bidding yet)
 ```
@@ -54,8 +54,17 @@ python main.py --once  # run one manual cycle (no automated bidding yet)
 
 ## Bot commands (Telegram)
 
-A single daily message with buttons (no spam). From there or by typing the command:
+Every morning at 9:00 you get **one report** with what matters already inside: your
+position in the league and the gap to the leader, when the gameweek starts, your
+budget and squad value, injuries, offers, players worth selling now and the suggested
+captain. It comes with just two buttons (lineup and menu). The menu has six buttons
+(report, lineup, market, league, gameweek and "more"); navigating edits the same message
+instead of piling up new ones.
 
+- `/parte` — the morning report, now.
+- `/liga` — the league table, with the gaps above and below you.
+- `/jornada` — the gameweek's matches with kick-off times and which of your players play in each.
+- `/menu` — everything with buttons.
 - `/alineacion` — the optimal XI of the gameweek, with a **smart captain**: combines expected points (already including match difficulty) with a small bonus if the player is a differential (few others own him → captaining him pays off more for climbing the table).
 - `/mercado` — bargains, price trends and clauses (with buttons to buy/sell).
 - `/optimizar` — the best move: sell X and buy Z to gain points, **looking at upcoming gameweeks** (rewards players with an easy run ahead).
@@ -87,8 +96,8 @@ transfers/sales for that day, grouped in one message (deduplicated in the DB, no
 repeats) — instead of dripping one message per move. The first time it just learns
 the state, without dumping a giant alert.
 
-It also alerts (deduplicated, urgent drops only) when one of your players is worth
-selling on price before it falls — the rest you check yourself with `/vender`.
+Players worth selling before their price falls go in the morning report (urgent
+drops only); the full analysis is in `/vender`.
 
 **Optional league-rule checks.** If you create `config/league_rules.py` (see
 `config/league_rules.example.py`; it's gitignored, so your rules stay private),
@@ -96,6 +105,31 @@ the agent flags rivals that break your league's agreed rules — clauses below t
 required minimum, a captain over a value cap, too many players from the same club
 — inside that same daily digest. You can also pull the digest on demand with
 `/resumendiario`.
+
+## Staying up on its own
+
+The unofficial API changes without notice, so the agent is built to survive it:
+
+- **App version.** When Biwenger ships a new app it rejects the old `X-Version` with
+  "Old version". The agent reads the new number from biwenger.as.com, keeps using it
+  (it's stored in the database) and tells you on Telegram. `BIWENGER_APP_VERSION` in
+  `.env` is only the starting value.
+- **Gameweeks.** The current gameweek comes from the competition's `activeEvents`, not
+  from `rounds/league` (which points at the finished or a postponed round between
+  gameweeks).
+- **Failure alerts.** If a scheduled job stops working you get one message when it
+  breaks and one when it recovers, never one per run. An expired token is a single
+  alert for every job.
+- **Pinned dependencies.** The image installs `requirements.lock` (exact versions tested
+  together), so a library update can't break it behind your back. `.dockerignore` keeps
+  `.env` and the database out of the image.
+
+Run the tests in a throwaway container, never against your real database (they reset it):
+
+```bash
+docker build -t biwenger-agent:test .
+docker run --rm biwenger-agent:test sh -c "pip install -q pytest && python -m pytest -q"
+```
 
 ## Important notice
 

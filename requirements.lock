@@ -1,0 +1,24 @@
+# Versiones exactas que usa la imagen (probadas juntas). requirements.txt dice qué
+# necesita el proyecto; este archivo, con qué versiones se construye. Para actualizar:
+# instala requirements.txt en una imagen limpia, pasa los tests y vuelca `pip freeze` aquí.
+annotated-types==0.8.0
+APScheduler==3.11.3
+certifi==2026.7.22
+charset-normalizer==3.5.0
+greenlet==3.5.5
+idna==3.18
+numpy==2.5.2
+pandas==3.0.5
+PuLP==3.3.2
+pydantic==2.13.4
+pydantic_core==2.46.4
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.2
+requests==2.34.2
+six==1.17.0
+SQLAlchemy==2.0.52
+tenacity==9.1.4
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+tzlocal==5.4.4
+urllib3==2.7.0

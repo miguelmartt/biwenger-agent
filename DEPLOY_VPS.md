@@ -62,8 +62,9 @@ docker compose run --rm app python main.py --once
 ```
 
 Deberías ver en el log el login OK y recibir en Telegram la alineación sugerida y
-el informe de economía. Si ves un error **"Old version"**, edita `.env` y sube
-`BIWENGER_APP_VERSION` al número actual (se ve en la URL del bundle de la web:
+el informe de economía. Si Biwenger ha cambiado de versión ("Old version"), el agente
+lee la nueva de la web y sigue solo; solo si no pudiera leerla tendrías que subir
+`BIWENGER_APP_VERSION` en `.env` al número actual (se ve en la URL del bundle de la web:
 `cdn.biwenger.com/app/vXXX/...`).
 
 ## Paso 5 — Arrancar en 24/7

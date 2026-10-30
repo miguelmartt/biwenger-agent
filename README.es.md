@@ -39,7 +39,7 @@ el único sitio a tocar.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.lock   # las versiones exactas que usa la imagen de Docker
 cp .env.example .env   # rellena tus credenciales y IDs de liga
 python main.py --once  # ejecuta un ciclo manual (sin automatizar pujas todavía)
 ```
@@ -56,9 +56,16 @@ python main.py --once  # ejecuta un ciclo manual (sin automatizar pujas todavía
 
 ## Comandos del bot (Telegram)
 
-Un único mensaje diario con botones (nada de spam). Desde ahí o escribiendo el
-comando:
+Cada mañana a las 9:00 llega **un parte** con lo importante ya dentro: tu puesto en la
+liga y la distancia al líder, cuándo empieza la jornada, tu saldo y el valor de la
+plantilla, lesiones, ofertas, a quién conviene vender ya y el capitán sugerido. Trae
+solo dos botones (alineación y menú). El menú tiene seis (parte, alineación, mercado,
+liga, jornada y «más»), y al navegar se edita el mismo mensaje en vez de amontonar otros.
 
+- `/parte` — el parte del día, ahora.
+- `/liga` — la clasificación, con la distancia a los de arriba y abajo.
+- `/jornada` — los partidos con su hora y qué jugadores tuyos juegan en cada uno.
+- `/menu` — todo con botones.
 - `/alineacion` — el once óptimo de la jornada, con **capitán inteligente**: combina puntos esperados (ya incluye la dificultad del partido) con un pequeño bonus si es diferencial (casi nadie más lo tiene → capitanearlo renta más para subir puestos).
 - `/mercado` — chollos, tendencias de precio y cláusulas (con botones para fichar/vender).
 - `/optimizar` — la mejor jugada: vende X y ficha Z para subir puntos, **mirando las próximas jornadas** (premia a quien tiene calendario fácil por delante).
@@ -91,9 +98,8 @@ fichajes/ventas de tus rivales de ese día, agrupados en un solo mensaje (con
 deduplicación en BD, sin repetir) — en vez de gotear un mensaje por movimiento.
 La primera vez solo aprende el estado, sin soltar un aviso gigante.
 
-También avisa (deduplicado, solo caídas urgentes) cuando a un jugador tuyo le
-conviene salir por precio antes de que baje — el resto lo consultas tú con
-`/vender`.
+A quién conviene vender antes de que baje de precio va en el parte de la mañana (solo
+las caídas urgentes); el análisis completo está en `/vender`.
 
 **Chequeo de reglas de liga (opcional).** Si creas `config/league_rules.py` (mira
 `config/league_rules.example.py`; está en .gitignore, así que tus reglas quedan
@@ -101,6 +107,30 @@ privadas), el agente marca a los rivales que incumplan las reglas acordadas de t
 liga — cláusulas por debajo del mínimo, capitán por encima de un tope de valor,
 demasiados jugadores del mismo club — dentro de ese mismo resumen diario. También
 puedes pedirlo cuando quieras con `/resumendiario`.
+
+## Se mantiene en pie solo
+
+La API no oficial cambia sin avisar, así que el agente está hecho para aguantarlo:
+
+- **Versión de la app.** Cuando Biwenger saca app nueva rechaza la `X-Version` vieja con
+  "Old version". El agente lee el número nuevo de biwenger.as.com, se queda con él (lo
+  guarda en la base de datos) y te avisa por Telegram. `BIWENGER_APP_VERSION` del `.env`
+  es solo el valor de partida.
+- **Jornadas.** La jornada que toca sale de `activeEvents` de la competición, no de
+  `rounds/league` (que entre jornadas apunta a la ya terminada o a una aplazada).
+- **Avisos de fallo.** Si un trabajo programado deja de funcionar te llega un mensaje
+  cuando se rompe y otro cuando vuelve, nunca uno por ejecución. Si caduca el token, un
+  único aviso para todos.
+- **Dependencias fijadas.** La imagen instala `requirements.lock` (versiones exactas
+  probadas juntas), así que una librería que se actualiza sola no lo puede romper.
+  `.dockerignore` deja el `.env` y la base de datos fuera de la imagen.
+
+Los tests, en un contenedor de usar y tirar, nunca contra tu base de datos real (la vacían):
+
+```bash
+docker build -t biwenger-agent:test .
+docker run --rm biwenger-agent:test sh -c "pip install -q pytest && python -m pytest -q"
+```
 
 ## Aviso importante
 

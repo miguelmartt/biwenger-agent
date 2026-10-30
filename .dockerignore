@@ -1,0 +1,7 @@
+# Los secretos llegan por env_file en docker-compose, nunca dentro de la imagen.
+.env
+*.db
+.git
+**/__pycache__
+**/*.pyc
+.pytest_cache
