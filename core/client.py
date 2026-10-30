@@ -499,37 +499,36 @@ class BiwengerClient:
         return fixtures
 
     def get_my_live_events(self, my_player_ids: list[int]) -> list[LivePlayerEvent]:
-        """Eventos (goles, asistencias, tarjetas) de TUS jugadores en la jornada actual.
+        """Eventos (goles, asistencias, tarjetas...) de TUS jugadores en la jornada activa.
 
-        Lee el detalle de cada jugador tuyo y saca los eventos del report de la
-        jornada en curso. Durante un partido, Biwenger los va rellenando en vivo.
+        Salen de rounds/la-liga/{id}: cada partido trae en home/away.reports a sus
+        jugadores con sus eventos, y Biwenger los va rellenando mientras se juega. Una
+        sola petición para toda la jornada. (El detalle de cada jugador no sirve: no
+        incluye la jornada en curso hasta que termina.)
         """
-        round_id = self.get_current_round_id()
+        round_id = self.get_active_round_id()
         if not round_id:
             return []
+        data = self._request(
+            "GET", f"{API_BASE}/rounds/{COMPETITION}/{round_id}", params={"lang": "es", "score": 5}
+        )["data"]
+        mine = {int(pid) for pid in my_player_ids}
         events: list[LivePlayerEvent] = []
-        for pid in my_player_ids:
-            try:
-                data = self._request(
-                    "GET", f"{API_BASE}/players/{COMPETITION}/{pid}",
-                    params={"lang": "es", "fields": "id,name,reports(round,events)"},
-                )["data"]
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Sin eventos en vivo para %s: %s", pid, exc)
-                continue
-            name = data.get("name", "?")
-            for report in data.get("reports", []) or []:
-                if (report.get("round") or {}).get("id") != round_id:
-                    continue
-                for ev in report.get("events", []) or []:
-                    events.append(
-                        LivePlayerEvent(
-                            player_id=int(pid), player_name=name,
-                            event_type=int(ev.get("type", 0)),
-                            minute=int(ev.get("metadata", 0) or 0),
-                            round_id=int(round_id),
+        for game in data.get("games", []) or []:
+            for side in ("home", "away"):
+                for report in (game.get(side) or {}).get("reports", []) or []:
+                    player = (report.get("player") or {}) if isinstance(report, dict) else {}
+                    if player.get("id") is None or int(player["id"]) not in mine:
+                        continue
+                    for ev in report.get("events", []) or []:
+                        events.append(
+                            LivePlayerEvent(
+                                player_id=int(player["id"]), player_name=player.get("name", "?"),
+                                event_type=int(ev.get("type", 0) or 0),
+                                minute=int(ev.get("metadata", 0) or 0),
+                                round_id=int(round_id),
+                            )
                         )
-                    )
         return events
 
     def has_live_games(self, now_epoch: int) -> bool:
@@ -547,14 +546,14 @@ class BiwengerClient:
             try:
                 data = self._request(
                     "GET", f"{API_BASE}/players/{COMPETITION}/{pid}",
-                    params={"lang": "es", "fields": "id,name,reports(round,points)"},
+                    params={"lang": "es", "fields": "id,name,reports(match(round),points)"},
                 )["data"]
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Sin puntos de jornada para %s: %s", pid, exc)
                 continue
             pts = None
             for report in data.get("reports", []) or []:
-                if (report.get("round") or {}).get("id") == round_id:
+                if _report_round_id(report) == int(round_id):
                     p = report.get("points")
                     pts = p.get("1") if isinstance(p, dict) else p
                     break
@@ -929,6 +928,15 @@ def _extract_fitness(raw) -> list[int]:
                 if isinstance(val, (int, float)):
                     points.append(int(val))
     return points
+
+
+def _report_round_id(report) -> int | None:
+    """La jornada de un report del detalle de un jugador. Biwenger la da en match.round
+    (antes venía en round) y los partidos que no jugó llegan como [] en vez de un objeto."""
+    if not isinstance(report, dict):
+        return None
+    rnd = (report.get("match") or {}).get("round") or report.get("round") or {}
+    return int(rnd["id"]) if isinstance(rnd, dict) and rnd.get("id") is not None else None
 
 
 def _old_version(resp) -> bool:

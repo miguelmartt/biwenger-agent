@@ -58,6 +58,21 @@ def test_round_number_reads_the_name_not_the_id():
     assert client.get_round_number(123) == 0
 
 
+def test_round_points_read_the_round_from_the_match():
+    # Forma real del detalle de un jugador (oct 2026): la jornada va en match.round y un
+    # partido que no jugó llega como [] (antes rompía con «'list' object has no attribute 'get'»).
+    reports = [
+        [],
+        {"match": {"round": {"id": 4907, "name": "Jornada 9"}}, "points": {"1": 14, "5": 13}},
+        {"match": {"round": {"id": 4908, "name": "Jornada 10"}}, "points": {"1": 2, "5": 4}},
+    ]
+    client = _client_with(COMPETITION)
+    client._request = lambda method, url, **kwargs: {"data": {"name": "Baena", "reports": reports}}
+
+    assert client.get_round_player_points(4907, [19547]) == {19547: {"name": "Baena", "points": 14}}
+    assert client.get_round_player_points(4909, [19547]) == {19547: {"name": "Baena", "points": None}}
+
+
 class _Resp:
     def __init__(self, status: int, text: str = "", payload=None):
         self.status_code = status

@@ -128,6 +128,6 @@ class LivePlayerEvent:
     """Un evento en vivo de un jugador tuyo (gol, asistencia, tarjeta...)."""
     player_id: int
     player_name: str
-    event_type: int      # 1=gol, 2=gol de penalti, 3=asistencia, 4=amarilla, 5=roja
+    event_type: int      # tipo de Biwenger: 1=gol, 3=asistencia, 7=roja... (live/tracker.py)
     minute: int
     round_id: int

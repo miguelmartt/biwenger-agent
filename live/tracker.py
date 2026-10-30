@@ -15,12 +15,20 @@ from data.db import filter_new_live_events
 
 logger = logging.getLogger(__name__)
 
-# Qué eventos avisamos y cómo. Los que no estén aquí (p.ej. amarilla) no molestan.
+# Tipos de evento de Biwenger (el enum de su app): 1 gol, 2 gol de penalti, 3 asistencia,
+# 4 sale, 5 entra, 6 amarilla, 7 roja, 8 doble amarilla, 9 gol en propia, 10 palo,
+# 11 penalti fallado, 12 penalti parado, 13 gol anulado, 14 lesión, 15 y 17 tanda de
+# penaltis, 16 penalti cometido. Solo avisamos de lo que importa; cambios, amarillas y
+# palos no molestan.
 EVENT_LABEL = {
     1: "⚽ ¡GOL!",
     2: "⚽ ¡GOL de penalti!",
     3: "🅰️ Asistencia",
-    5: "🟥 Tarjeta roja",
+    7: "🟥 Tarjeta roja",
+    8: "🟥 Expulsado por doble amarilla",
+    9: "😬 Gol en propia puerta",
+    11: "❌ Penalti fallado",
+    14: "🚑 Lesionado",
 }
 
 
