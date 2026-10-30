@@ -1,8 +1,19 @@
 """Tests del dispatcher de comandos y del flujo de acciones con confirmación."""
 from __future__ import annotations
 
+import dataclasses
+
+import pytest
+
+from bot import actions
 from bot.commands import handle_command
 from bot.actions import handle_callback
+
+
+@pytest.fixture(autouse=True)
+def _dry_run(monkeypatch):
+    # Estos tests nunca deben depender del .env de quien los lance: siempre en modo prueba.
+    monkeypatch.setattr(actions, "settings", dataclasses.replace(actions.settings, dry_run=True))
 
 
 class _FakeClient:
@@ -55,7 +66,7 @@ def test_cancel_does_nothing():
 
 
 def test_execute_in_dry_run_does_not_act():
-    # Con DRY_RUN (por defecto en tests), confirmar NO ejecuta compra real.
+    # Con DRY_RUN, confirmar NO ejecuta compra real.
     text, _ = handle_callback("do:f:12345:150000", _FakeClient())
     assert "MODO PRUEBA" in text
 

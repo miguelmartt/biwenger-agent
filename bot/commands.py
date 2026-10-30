@@ -1,12 +1,17 @@
 """Comandos interactivos del bot de Telegram.
 
-Cada comando devuelve el texto de respuesta. La lógica real vive en
-core.services (compartida con los avisos automáticos).
+Cada comando devuelve (texto, botones). La lógica real vive en core.services y el
+formato de las vistas nuevas en bot.views (compartidos con los avisos automáticos).
+
+Menos es más: el menú tiene 6 botones en dos columnas y lo secundario va detrás de
+«➕ Más»; el menú «/» de Telegram enseña solo lo esencial (el resto se puede escribir).
 """
 from __future__ import annotations
 
 import logging
 
+from bot import views
+from bot.telegram_bot import Html, grid
 from config.settings import settings
 from core import services
 from core.client import BiwengerClient
@@ -14,123 +19,151 @@ from core.client import BiwengerClient
 logger = logging.getLogger(__name__)
 
 Button = tuple[str, str]
+Rows = list[list[Button]]
 
-# Saludo diario con botones: el usuario elige qué ver (menos mensajes, más control).
-# Se personaliza con OWNER_NAME si está puesto; si no, saludo genérico.
-_WHO = f", {settings.owner_name}" if settings.owner_name else ""
-DAILY_GREETING = f"👋 ¡Buenas{_WHO}! ¿Qué quieres ver hoy?"
-MENU_BUTTONS: list[Button] = [
-    ("⚽ Alineación óptima", "cmd:alineacion"),
-    ("💰 Mercado y economía", "cmd:mercado"),
-    ("⏱️ Vender (timing)", "cmd:vender"),
-    ("📅 Calendario", "cmd:calendario"),
+MENU_MAIN: list[Button] = [
+    ("📋 Parte", "cmd:parte"),
+    ("⚽ Alineación", "cmd:alineacion"),
+    ("💰 Mercado", "cmd:mercado"),
+    ("🏆 Liga", "cmd:liga"),
+    ("📅 Jornada", "cmd:jornada"),
+    ("➕ Más", "cmd:mas"),
+]
+MENU_MORE: list[Button] = [
+    ("👥 Mi equipo", "cmd:equipo"),
+    ("⏱️ Vender", "cmd:vender"),
+    ("🔁 Optimizar", "cmd:optimizar"),
+    ("🗓️ Calendario", "cmd:calendario"),
     ("🕵️ Diferenciales", "cmd:diferenciales"),
     ("🎯 Quiniela", "cmd:quiniela"),
-    ("📊 Resumen jornada", "cmd:resumen"),
-    ("📋 Resumen diario", "cmd:resumendiario"),
-    ("👥 Mi equipo", "cmd:equipo"),
-    ("ℹ️ ¿Qué hace cada cosa?", "cmd:help"),
+    ("📊 Última jornada", "cmd:resumen"),
+    ("👀 Rivales", "cmd:resumendiario"),
+    ("⚙️ Ajustes", "cmd:auto"),
+    ("⬅️ Volver", "cmd:menu"),
 ]
+# Botones del parte diario: lo justo para seguir sin agobiar.
+REPORT_BUTTONS: Rows = [[("⚽ Alineación", "cmd:alineacion"), ("☰ Menú", "cmd:menu")]]
+
+_WHO = f", {settings.owner_name}" if settings.owner_name else ""
+MENU_TEXT = f"⚽ <b>Biwenger</b>{_WHO and ' · ' + views.esc(settings.owner_name)}\n¿Qué quieres ver?"
+MORE_TEXT = "➕ <b>Más opciones</b>"
 
 HELP_TEXT = (
-    "ℹ️ Esto es lo que puedo hacer por ti. Tú decides siempre; yo recomiendo y "
-    "ejecuto solo cuando pulsas el botón.\n"
+    "ℹ️ <b>Qué puedo hacer</b>\n"
+    "Cada mañana te mando el parte con lo importante. Yo recomiendo; tú decides, y nada se "
+    "ejecuta sin que pulses ✅.\n"
     "\n"
-    "⚽ TU EQUIPO\n"
-    "/alineacion — el once óptimo de la jornada, con capitán inteligente (mejores "
-    "puntos + bonus si es diferencial).\n"
-    "/equipo — tu plantilla y tu saldo de un vistazo.\n"
-    "/resumen — cómo te fue en la última jornada (y qué aprendió el modelo).\n"
-    "/resumendiario — movimientos de rivales del día + infracciones del reglamento.\n"
+    "<b>Lo de cada día</b>\n"
+    "/parte · el parte, ahora\n"
+    "/alineacion · el once óptimo con capitán\n"
+    "/mercado · chollos y cláusulas, con botón para fichar\n"
+    "/liga · la clasificación\n"
+    "/jornada · partidos y quién de los tuyos juega\n"
+    "/menu · todo con botones\n"
     "\n"
-    "💰 MERCADO Y ECONOMÍA\n"
-    "/mercado — chollos, tendencias de precio y cláusulas, con botones para fichar.\n"
-    "/optimizar — la mejor jugada (vende X, ficha Z) mirando ya las próximas jornadas.\n"
-    "/vender — a quién soltar YA (precio en techo/bajada o calendario duro).\n"
-    "/diferenciales — buenos jugadores que casi nadie tiene en tu liga (tu ventaja).\n"
-    "\n"
-    "📅 PLANIFICACIÓN\n"
-    "/calendario — lo fácil o difícil que tiene tu equipo las próximas 5 jornadas.\n"
-    "/quiniela — pronóstico 1X2 de la jornada.\n"
-    "/objetivos — tus auto-pujas (sniping) programadas.\n"
-    "\n"
-    "⚙️ AJUSTES\n"
-    "/auto — enciende/apaga automatizaciones (alineación y subir cláusula).\n"
-    "/aprendizaje — cómo va el auto-calibrado de mis predicciones.\n"
-    "/token <valor> — renueva el token de Biwenger si caduca, sin tocar el servidor.\n"
-    "/help — esta guía."
+    "<b>Cuando te haga falta</b>\n"
+    "/equipo · /vender · /optimizar · /calendario · /diferenciales · /quiniela · "
+    "/resumen · /resumendiario · /objetivos · /auto · /aprendizaje\n"
+    "/token &lt;valor&gt; · renueva el token de Biwenger si caduca"
 )
 
-# Lista para registrar el menú de comandos en Telegram (setMyCommands).
+# El menú «/» de Telegram: solo lo esencial.
 COMMAND_MENU = [
-    ("alineacion", "Once óptimo de la jornada"),
-    ("mercado", "Chollos, tendencias y cláusulas"),
-    ("optimizar", "La mejor jugada de mercado"),
-    ("calendario", "Dificultad de las próximas jornadas"),
-    ("diferenciales", "Jugadores que casi nadie tiene"),
-    ("vender", "A quién vender ya (timing)"),
-    ("quiniela", "Pronóstico 1X2 de la jornada"),
-    ("resumen", "Resumen de la última jornada"),
-    ("resumendiario", "Movimientos rivales + infracciones"),
-    ("objetivos", "Tus auto-pujas programadas"),
-    ("auto", "Activa/desactiva automatizaciones"),
-    ("equipo", "Tu plantilla y saldo"),
-    ("help", "Ayuda"),
+    ("parte", "El parte del día"),
+    ("alineacion", "Once óptimo y capitán"),
+    ("mercado", "Chollos y fichajes"),
+    ("liga", "Clasificación"),
+    ("jornada", "Partidos de la jornada"),
+    ("menu", "Todo con botones"),
+    ("help", "Qué puedo hacer"),
 ]
 
-
-def _cmd_help(_: BiwengerClient) -> tuple[str, list[Button] | None]:
-    return HELP_TEXT, None
-
-
-def _cmd_lineup(client: BiwengerClient) -> tuple[str, list[Button] | None]:
-    return services.lineup_message(client), None
+# Vistas que se pueden «Actualizar» desde su botón (se recalculan al pulsar).
+REFRESHABLE = {"parte", "alineacion", "mercado", "liga", "jornada", "equipo", "vender", "optimizar",
+               "calendario", "diferenciales", "quiniela", "resumen", "resumendiario", "objetivos",
+               "aprendizaje"}
 
 
-def _cmd_market(client: BiwengerClient) -> tuple[str, list[Button] | None]:
+def nav(command: str) -> list[Button]:
+    """La fila de navegación de una vista: actualizar y volver al menú."""
+    row = [("⬅️ Menú", "cmd:menu")]
+    if command in REFRESHABLE:
+        row.insert(0, ("🔄 Actualizar", f"cmd:{command}"))
+    return row
+
+
+def _cmd_menu(_: BiwengerClient):
+    return Html(MENU_TEXT), grid(MENU_MAIN)
+
+
+def _cmd_more(_: BiwengerClient):
+    return Html(MORE_TEXT), grid(MENU_MORE)
+
+
+def _cmd_help(_: BiwengerClient):
+    return Html(HELP_TEXT), None
+
+
+def _cmd_report(client: BiwengerClient):
+    return views.daily_report(client), None
+
+
+def _cmd_lineup(client: BiwengerClient):
+    return views.lineup_view(client), None
+
+
+def _cmd_squad(client: BiwengerClient):
+    return views.squad_view(client), None
+
+
+def _cmd_standings(client: BiwengerClient):
+    return views.standings_view(client), None
+
+
+def _cmd_round(client: BiwengerClient):
+    return views.round_view(client), None
+
+
+def _cmd_market(client: BiwengerClient):
     report = services.economy_report(client)
     return report.as_text(), report.action_buttons()
 
 
-def _cmd_squad(client: BiwengerClient) -> tuple[str, list[Button] | None]:
-    return services.squad_message(client), None
-
-
-def _cmd_quiniela(client: BiwengerClient) -> tuple[str, list[Button] | None]:
+def _cmd_quiniela(client: BiwengerClient):
     return services.quiniela_message(client), None
 
 
-def _cmd_summary(client: BiwengerClient) -> tuple[str, list[Button] | None]:
+def _cmd_summary(client: BiwengerClient):
     return services.postmatch_message(client), None
 
 
-def _cmd_optimize(client: BiwengerClient) -> tuple[str, list[Button] | None]:
+def _cmd_optimize(client: BiwengerClient):
     return services.optimize_squad(client), None
 
 
-def _cmd_calendar(client: BiwengerClient) -> tuple[str, list[Button] | None]:
+def _cmd_calendar(client: BiwengerClient):
     return services.fixture_calendar_message(client), None
 
 
-def _cmd_differentials(client: BiwengerClient) -> tuple[str, list[Button] | None]:
+def _cmd_differentials(client: BiwengerClient):
     return services.differentials_message(client), None
 
 
-def _cmd_sell(client: BiwengerClient) -> tuple[str, list[Button] | None]:
+def _cmd_sell(client: BiwengerClient):
     return services.sell_timing_message(client)
 
 
-def _cmd_daily_digest(client: BiwengerClient) -> tuple[str, list[Button] | None]:
+def _cmd_daily_digest(client: BiwengerClient):
     text = services.daily_digest(client, consume=False)
     return (text or "📋 Sin novedades hoy: ni movimientos de rivales ni infracciones detectadas."), None
 
 
-def _cmd_learning(_: BiwengerClient) -> tuple[str, list[Button] | None]:
+def _cmd_learning(_: BiwengerClient):
     from learning.tuner import learning_status
     return learning_status(), None
 
 
-def _cmd_auto(_: BiwengerClient) -> tuple[str, list[Button] | None]:
+def _cmd_auto(_: BiwengerClient):
     from data.db import get_setting
 
     lineup_on = get_setting("auto_lineup") == "on"
@@ -151,7 +184,7 @@ def _cmd_auto(_: BiwengerClient) -> tuple[str, list[Button] | None]:
     return text, buttons
 
 
-def _cmd_targets(client: BiwengerClient) -> tuple[str, list[Button] | None]:
+def _cmd_targets(client: BiwengerClient):
     from data.db import list_snipe_targets
 
     targets = [t for t in list_snipe_targets() if t.status in ("pending", "done")]
@@ -168,9 +201,17 @@ def _cmd_targets(client: BiwengerClient) -> tuple[str, list[Button] | None]:
 
 
 HANDLERS = {
-    "/start": _cmd_help,
+    "/start": _cmd_menu,
+    "/menu": _cmd_menu,
+    "/mas": _cmd_more,
     "/help": _cmd_help,
+    "/ayuda": _cmd_help,
+    "/parte": _cmd_report,
     "/alineacion": _cmd_lineup,
+    "/equipo": _cmd_squad,
+    "/liga": _cmd_standings,
+    "/clasificacion": _cmd_standings,
+    "/jornada": _cmd_round,
     "/mercado": _cmd_market,
     "/optimizar": _cmd_optimize,
     "/calendario": _cmd_calendar,
@@ -182,11 +223,21 @@ HANDLERS = {
     "/objetivos": _cmd_targets,
     "/aprendizaje": _cmd_learning,
     "/auto": _cmd_auto,
-    "/equipo": _cmd_squad,
 }
 
 
-def handle_command(text: str, client: BiwengerClient) -> tuple[str, list[Button] | None]:
+def with_nav(command: str, buttons) -> Rows | None:
+    """Los botones propios de una vista (fichar, vender…) en cuadrícula, más la fila de navegación.
+    El menú y «Más» ya son navegación y se devuelven tal cual."""
+    if command in ("menu", "mas", "start"):
+        return buttons
+    rows: Rows = []
+    if buttons:
+        rows = buttons if isinstance(buttons[0], list) else grid(list(buttons), 1)
+    return rows + [nav(command)]
+
+
+def handle_command(text: str, client: BiwengerClient):
     """Despacha un mensaje de texto a su comando. Devuelve (texto, botones)."""
     parts = text.strip().split()
     # Primer token, en minúsculas, quitando un posible @nombrebot.
@@ -204,7 +255,7 @@ def handle_command(text: str, client: BiwengerClient) -> tuple[str, list[Button]
 
     handler = HANDLERS.get(cmd)
     if handler is None:
-        return "No conozco ese comando. Escribe /help para ver lo que puedo hacer.", None
+        return "No conozco ese comando. Escribe /menu o /help.", None
     try:
         return handler(client)
     except Exception as exc:  # noqa: BLE001 - un fallo no debe tumbar el bot

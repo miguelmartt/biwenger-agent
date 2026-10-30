@@ -11,17 +11,19 @@ import logging
 import time
 from datetime import datetime, timedelta
 
-from apscheduler.events import EVENT_JOB_ERROR
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from bidding.sniper import process_snipes
-from bot.commands import DAILY_GREETING, MENU_BUTTONS
-from bot.telegram_bot import send_message
+from bot import views
+from bot.commands import REPORT_BUTTONS
+from bot.telegram_bot import Html, send_message
 from core import services
-from core.client import BiwengerClient, BiwengerTokenExpired
+from core.client import BiwengerClient
 from data.db import detect_status_changes, init_db, save_player_snapshots
 from live.tracker import live_updates
+from scheduler.health import JobHealth
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -75,13 +77,7 @@ def job_sync_state() -> None:
     except Exception as exc:  # noqa: BLE001 - no dejes que tumbe el snapshot
         logger.warning("job_sync_state: espía de rivales no concluyente (%s)", exc)
 
-    # Timing de ventas: aviso proactivo (deduplicado) solo de caídas urgentes.
-    try:
-        alert = services.sell_timing_alerts(client, catalog)
-        if alert:
-            send_message(alert)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("job_sync_state: timing de ventas no concluyente (%s)", exc)
+    # Las ventas urgentes ya no llegan sueltas: van en el parte diario (menos mensajes).
 
     logger.info("job_sync_state: snapshot guardado, %s cambios de estado", len(changes))
 
@@ -99,9 +95,10 @@ def job_quiniela() -> None:
     send_message(services.quiniela_message(client))
 
 
-def job_daily_menu() -> None:
-    """Saludo diario con botones: el usuario elige qué ver (en vez de spamearle informes)."""
-    send_message(DAILY_GREETING, MENU_BUTTONS)
+def job_daily_report() -> None:
+    """El parte de cada mañana: clasificación, jornada, saldo, avisos y capitán en un solo
+    mensaje, con dos botones (alineación y menú) en vez de un muro de opciones."""
+    send_message(views.daily_report(client), REPORT_BUTTONS)
 
 
 def job_save_predictions() -> None:
@@ -141,18 +138,9 @@ def job_rival_digest() -> None:
 
 
 def job_token_health() -> None:
-    """Comprueba a diario que el token sigue vivo; si no, avisa con antelación
-    para que el usuario lo renueve con /token (sin tocar el servidor)."""
-    try:
-        client.get_balance()
-    except BiwengerTokenExpired:
-        send_message(
-            "⚠️ Tu token de Biwenger ha caducado. Renuévalo fácil: entra a biwenger.as.com, "
-            "consola (F12) → localStorage.getItem('satellizer_token'), copia el texto y mándame "
-            "aquí: /token <el_token>. (Sin tocar el servidor.)"
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("job_token_health: no concluyente (%s)", exc)
+    """Comprueba a diario que el token sigue vivo. Si caducó, el aviso (uno solo, aunque
+    fallen todos los trabajos a la vez) lo manda scheduler/health.py."""
+    client.get_balance()
 
 
 def job_live_tracking() -> None:
@@ -189,28 +177,26 @@ def job_auto_lineup() -> None:
             send_message(message)
 
 
-def _on_job_error(event) -> None:
-    """Avisa por Telegram si un job falla; mensaje especial si el token caducó."""
-    exc = event.exception
-    if isinstance(exc, BiwengerTokenExpired):
-        send_message(
-            "⚠️ El token de Biwenger ha caducado. Renuévalo desde aquí mismo, sin tocar el "
-            "servidor: saca 'satellizer_token' del navegador (F12 → consola) y mándame "
-            "/token <el_token>. En cuanto lo hagas, el agente sigue solo."
-        )
+# Avisa una vez cuando un trabajo deja de funcionar y otra cuando vuelve (ver scheduler/health.py).
+health = JobHealth(lambda text: send_message(Html(text)))
+
+
+def _on_job_event(event) -> None:
+    if event.exception:
+        health.on_error(event.job_id, event.exception)
     else:
-        logger.error("Job %s falló: %s", event.job_id, exc)
+        health.on_success(event.job_id)
 
 
 def build_scheduler() -> BlockingScheduler:
     init_db()
     scheduler = BlockingScheduler(timezone="Europe/Madrid")
-    scheduler.add_listener(_on_job_error, EVENT_JOB_ERROR)
+    scheduler.add_listener(_on_job_event, EVENT_JOB_ERROR | EVENT_JOB_EXECUTED)
 
     # Sincroniza precios/puntos y detecta lesiones (silencioso salvo cambios).
     scheduler.add_job(job_sync_state, CronTrigger(minute="*/30"), id="sync_state")
-    # Un ÚNICO mensaje diario: saludo con botones (evita el spam de volcar informes).
-    scheduler.add_job(job_daily_menu, CronTrigger(hour=9), id="daily_menu")
+    # Un ÚNICO mensaje diario: el parte, con la información ya dentro y solo dos botones.
+    scheduler.add_job(job_daily_report, CronTrigger(hour=9), id="daily_report")
     # Seguimiento en vivo: cada 5 min, pero solo actúa si hay partido en curso.
     scheduler.add_job(job_live_tracking, CronTrigger(minute="*/5"), id="live_tracking")
     # Guardar predicciones de la jornada (viernes, antes de que se juegue).
