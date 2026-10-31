@@ -54,7 +54,8 @@ token, `client.py` debe relanzar login.
   recientes) + penalización si hay duda de lesión/sanción. Está pensado para
   poder sustituirse después por un modelo de ML sin tocar el resto del
   sistema (respeta la misma interfaz `predict(player_id) -> float`).
-- `optimizer.py`: problema de programación lineal entera con PuLP.
+- `optimizer.py`: problema de programación lineal entera con PuLP, resuelto con
+  HiGHS dentro del propio proceso (sin binario externo ni archivos temporales).
   Variables binarias `x_i` (titular sí/no) por jugador de tu plantilla,
   maximiza `sum(x_i * puntos_esperados_i)` sujeto a: exactamente 11
   titulares, cupos mínimos/máximos por posición según la formación elegida

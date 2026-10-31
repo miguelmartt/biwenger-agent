@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- The lineup solver is **HiGHS** (`highspy` 1.13.0, through `PuLP[highs]`) instead of the CBC
+  binary bundled with PuLP, which is deprecated and goes away in PuLP 4.0. HiGHS solves inside the
+  process, with no external binary or temporary files, so the image no longer needs to make CBC
+  executable at build time. It adds 2.5 MB; the alternative PuLP suggests, `cbcbox`, is 191 MB.
+- The lineup variables are created with `prob.add_variable()`, the PuLP 4.0 API, and a starter is
+  any binary above 0.5, so the solver's integrality tolerance can't drop a player.
+- The README badge says Python 3.12+, what `requirements.lock` needs (numpy 2.5.2).
+
 ## [1.0.0] - 2026-10-31
 
 First versioned release: everything the agent runs today, after a security review of every path

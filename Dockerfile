@@ -11,9 +11,6 @@ ENV TZ=Europe/Madrid \
 # Versiones exactas (requirements.lock): una dependencia que cambia sola no puede romper el bot.
 COPY requirements.lock .
 RUN pip install --no-cache-dir -r requirements.lock
-# PuLP trae su propio CBC y, si no es ejecutable, intenta darle permisos al importarse; como
-# usuario sin privilegios y con el disco de solo lectura no podría (y la alineación fallaría).
-RUN python -c "import importlib.util, pathlib; d = pathlib.Path(importlib.util.find_spec('pulp').origin).parent; [p.chmod(0o755) for p in d.glob('solverdir/cbc/*/*/cbc')]"
 
 # Usuario sin privilegios (uid/gid fijos 10001, los de la migración de DEPLOY_VPS.md).
 # /data es lo único en lo que escribe (la BD SQLite, montada como volumen); el resto, /tmp.

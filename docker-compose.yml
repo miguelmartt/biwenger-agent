@@ -13,7 +13,7 @@ services:
 
     # Endurecido: corre como usuario sin privilegios (Dockerfile), sin capacidades de root,
     # sin poder ganar privilegios y con el sistema de archivos de solo lectura. Solo escribe
-    # en /data (el volumen) y en /tmp (en memoria; ahí deja PuLP sus archivos temporales).
+    # en /data (el volumen) y en /tmp (en memoria).
     read_only: true
     tmpfs:
       - /tmp:size=64m
