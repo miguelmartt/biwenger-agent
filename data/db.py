@@ -2,15 +2,24 @@
 API, así que guardamos snapshots nosotros mismos desde el primer día."""
 from __future__ import annotations
 
-from datetime import datetime
+import logging
+import secrets
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import DateTime, Float, Integer, String, create_engine
+from sqlalchemy import DateTime, Float, Integer, String, create_engine, inspect, text, update
 from sqlalchemy import Boolean
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from config.settings import settings
+
+logger = logging.getLogger(__name__)
+
+
+def _utcnow() -> datetime:
+    """Ahora en UTC, sin zona (como el resto de fechas guardadas)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class Base(DeclarativeBase):
@@ -145,24 +154,32 @@ def filter_new_sell_alerts(current_ids):
 
 class SnipeTarget(Base):
     """Objetivo de auto-puja: un jugador que el bot pujará en el último minuto
-    antes del cierre, hasta un tope que autorizó el usuario."""
+    antes del cierre, hasta un tope que autorizó el usuario.
+
+    `listing_until` es el cierre (epoch) del anuncio del mercado en el que lo marcaste: el
+    bot solo puja en ESE anuncio. Si el mercado cierra y el jugador vuelve a salir otro día,
+    el objetivo ya no vale (pasa a `expired`)."""
     __tablename__ = "snipe_targets"
 
     player_id: Mapped[str] = mapped_column(String, primary_key=True)
     player_name: Mapped[str] = mapped_column(String)
     max_bid: Mapped[int] = mapped_column(Integer)
-    status: Mapped[str] = mapped_column(String, default="pending")  # pending|done|error|cancelled
+    status: Mapped[str] = mapped_column(String, default="pending")  # pending|done|error|cancelled|expired
     result: Mapped[str] = mapped_column(String, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    listing_until: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
-def add_snipe_target(player_id, name, max_bid) -> None:
+def add_snipe_target(player_id, name, max_bid, listing_until) -> None:
     with get_session() as s:
         row = s.get(SnipeTarget, str(player_id))
         if row:
             row.player_name, row.max_bid, row.status, row.result = name, int(max_bid), "pending", ""
+            row.listing_until = int(listing_until)
+            row.created_at = _utcnow()
         else:
-            s.add(SnipeTarget(player_id=str(player_id), player_name=name, max_bid=int(max_bid)))
+            s.add(SnipeTarget(player_id=str(player_id), player_name=name, max_bid=int(max_bid),
+                              listing_until=int(listing_until)))
         s.commit()
 
 
@@ -192,6 +209,109 @@ def cancel_snipe(player_id) -> bool:
             s.commit()
             return True
     return False
+
+
+# --------------------------------------------------------------------------- #
+# Acciones con dinero pendientes de tu ✅ (fichar, pujar, cláusula, vender, auto-puja)
+# --------------------------------------------------------------------------- #
+# Cuánto vale un botón de confirmar desde que se pidió (segundos).
+PENDING_ACTION_TTL = 10 * 60
+
+
+class PendingAction(Base):
+    """Una acción con dinero que espera tu confirmación. El botón de Telegram solo lleva su
+    id (`do:<id>`); los datos (qué, de quién, cuánto) viven aquí, así que el importe no
+    viaja en el botón. Vale una sola vez, caduca a los PENDING_ACTION_TTL segundos y, al
+    ejecutarla, se comprueba contra Biwenger que nada ha cambiado (los `ref_*`).
+
+    Las acciones que salen del mismo mensaje (los niveles de puja y la auto-puja de un
+    jugador) forman un lote: usar o cancelar una invalida las demás."""
+    __tablename__ = "pending_actions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    batch: Mapped[str] = mapped_column(String, index=True)
+    mode: Mapped[str] = mapped_column(String)  # f puja · t auto-puja · c cláusula · u subir cláusula · s vender
+    player_id: Mapped[int] = mapped_column(Integer)
+    player_name: Mapped[str] = mapped_column(String, default="")
+    amount: Mapped[int] = mapped_column(Integer)
+    owner_id: Mapped[int | None] = mapped_column(Integer, nullable=True)   # dueño, si es una cláusula
+    ref_price: Mapped[int | None] = mapped_column(Integer, nullable=True)  # precio o cláusula que viste
+    ref_until: Mapped[int | None] = mapped_column(Integer, nullable=True)  # cierre del anuncio (pujas)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    used: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+def create_pending_actions(specs: list[dict]) -> tuple[str, list[str]]:
+    """Guarda las acciones de un mensaje como un lote. Devuelve (lote, ids en el mismo orden).
+    De paso borra las de hace más de un día, que ya no valen para nada."""
+    batch = secrets.token_hex(6)
+    ids: list[str] = []
+    with get_session() as s:
+        s.query(PendingAction).filter(PendingAction.created_at < _utcnow() - timedelta(days=1)).delete()
+        for spec in specs:
+            action_id = secrets.token_hex(6)
+            s.add(PendingAction(id=action_id, batch=batch, created_at=_utcnow(), used=False, **spec))
+            ids.append(action_id)
+        s.commit()
+    return batch, ids
+
+
+def _expired(action: PendingAction) -> bool:
+    return (_utcnow() - action.created_at).total_seconds() > PENDING_ACTION_TTL
+
+
+def peek_pending_action(action_id: str) -> PendingAction | None:
+    """La acción si todavía vale (sin usar y sin caducar), SIN consumirla."""
+    with get_session() as s:
+        row = s.get(PendingAction, str(action_id))
+        if row is None or row.used or _expired(row):
+            return None
+        return row
+
+
+def claim_pending_action(action_id: str) -> tuple[str, PendingAction | None]:
+    """Consume la acción de forma atómica, antes de hacer nada con ella.
+
+    Devuelve (estado, acción): "ok" si es la primera vez que se usa y no ha caducado;
+    "used" si ya se usó o se canceló (un segundo clic, un update repetido); "expired" si
+    es más vieja que PENDING_ACTION_TTL (se consume igual, para que no valga nunca más);
+    "missing" si no existe. El UPDATE condicional (`used = false`) garantiza que, aunque
+    lleguen dos clics a la vez, solo uno la consigue. Invalida también el resto del lote.
+    """
+    with get_session() as s:
+        row = s.get(PendingAction, str(action_id))
+        if row is None:
+            return "missing", None
+        claimed = s.execute(
+            update(PendingAction)
+            .where(PendingAction.id == row.id, PendingAction.used.is_(False))
+            .values(used=True)
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        if claimed != 1:
+            s.rollback()
+            return "used", None
+        s.execute(
+            update(PendingAction)
+            .where(PendingAction.batch == row.batch, PendingAction.used.is_(False))
+            .values(used=True)
+            .execution_options(synchronize_session=False)
+        )
+        s.commit()
+        return ("expired" if _expired(row) else "ok"), row
+
+
+def cancel_pending_batch(batch: str) -> int:
+    """Invalida las acciones de un mensaje (botón Cancelar). Devuelve cuántas seguían vivas."""
+    with get_session() as s:
+        n = s.execute(
+            update(PendingAction)
+            .where(PendingAction.batch == str(batch), PendingAction.used.is_(False))
+            .values(used=True)
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        s.commit()
+    return n
 
 
 class PredictionLog(Base):
@@ -373,9 +493,29 @@ def _engine_options(url: str) -> dict:
 engine = create_engine(settings.database_url, future=True, **_engine_options(settings.database_url))
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
 
+# Columnas añadidas después de crear su tabla. create_all no toca las tablas que ya existen,
+# así que en una BD anterior se añaden con ALTER TABLE (nombres fijos de aquí, nada de fuera).
+_ADDED_COLUMNS = {
+    "snipe_targets": {"listing_until": "INTEGER"},
+}
+
+
+def _add_missing_columns() -> None:
+    inspector = inspect(engine)
+    with engine.begin() as conn:
+        for table, columns in _ADDED_COLUMNS.items():
+            if not inspector.has_table(table):
+                continue
+            existing = {c["name"] for c in inspector.get_columns(table)}
+            for name, ddl in columns.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+                    logger.info("BD: añadida la columna %s.%s", table, name)
+
 
 def init_db() -> None:
     Base.metadata.create_all(engine)
+    _add_missing_columns()
 
 
 def get_session() -> Session:

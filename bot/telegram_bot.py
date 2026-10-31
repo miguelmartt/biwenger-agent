@@ -11,6 +11,7 @@ de sus excepciones: aquí los fallos se registran solo con su tipo y su código 
 from __future__ import annotations
 
 import html
+import json
 import logging
 import re
 
@@ -22,6 +23,8 @@ from core.redact import describe_error
 logger = logging.getLogger(__name__)
 
 API = "https://api.telegram.org"
+# Solo mensajes nuevos y clics en botones: ni mensajes editados ni nada más.
+ALLOWED_UPDATES = ["message", "callback_query"]
 
 
 class TelegramError(RuntimeError):
@@ -164,18 +167,28 @@ def answer_callback_query(callback_id: str, text: str | None = None) -> None:
     _post("answerCallbackQuery", payload)
 
 
+def delete_message(message_id: int | None) -> bool:
+    """Borra un mensaje del chat (p. ej. el tuyo con /token <secreto>). True si se borró."""
+    if not message_id or not settings.telegram_chat_id:
+        return False
+    resp = _post("deleteMessage", {"chat_id": settings.telegram_chat_id, "message_id": message_id})
+    return resp is not None and resp.status_code == 200
+
+
 def set_commands(commands: list[tuple[str, str]]) -> None:
     _post("setMyCommands", {"commands": [{"command": c, "description": d} for c, d in commands]})
 
 
 def get_updates(offset: int | None, timeout: int = 30) -> list[dict]:
+    """Updates nuevos de Telegram. Con offset=-1 devuelve solo el último y Telegram olvida
+    todos los anteriores (así se descarta lo acumulado mientras el bot estaba parado)."""
     base = _base()
     if not base:
         return []
     try:
         resp = requests.get(
             f"{base}/getUpdates",
-            params={"offset": offset, "timeout": timeout},
+            params={"offset": offset, "timeout": timeout, "allowed_updates": json.dumps(ALLOWED_UPDATES)},
             timeout=timeout + 10,
         )
     except requests.RequestException as exc:

@@ -249,9 +249,10 @@ def handle_command(text: str, client: BiwengerClient):
             return "Uso: /token <tu_token>  (sácalo del navegador: localStorage.getItem('satellizer_token'))", None
         try:
             client.update_token(parts[1])
-            return "✅ Token actualizado y guardado. Borra este mensaje del chat por seguridad. 🔒", None
+            return "✅ Token actualizado y guardado. 🔒", None
         except Exception as exc:  # noqa: BLE001
-            return f"No pude actualizar el token: {exc}", None
+            logger.warning("No pude actualizar el token (%s)", type(exc).__name__)
+            return f"No pude actualizar el token ({type(exc).__name__}).", None
 
     handler = HANDLERS.get(cmd)
     if handler is None:

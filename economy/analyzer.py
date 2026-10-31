@@ -118,11 +118,12 @@ class EconomyReport:
         return "\n".join(lines)
 
     def action_buttons(self) -> list[tuple[str, str]]:
-        """Botones '✅ Fichar' para cada recomendación accionable.
+        """Botones para cada recomendación accionable.
 
-        callback_data compacto: 'ask:f:<pid>:<importe>' (mercado libre) o
-        'ask:c:<pid>:<clausula>' (cláusula). El flujo pide confirmación antes
-        de ejecutar nada; con DRY_RUN solo simula.
+        callback_data compacto: 'bid:<pid>:<precio>' (selector de puja del mercado libre),
+        'ask:c:<pid>:<clausula>:<dueño>' (cláusula), 'ask:u:…' (subir la tuya) y 'ask:s:…'
+        (vender). Ninguno ejecuta nada: bot.actions guarda la acción, pide confirmación y la
+        revalida contra Biwenger antes de actuar; con DRY_RUN solo simula.
         """
         buttons: list[tuple[str, str]] = []
         # Vender: poner en el mercado a tus jugadores en caída (precio de mercado).

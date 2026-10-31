@@ -37,6 +37,8 @@ def main() -> None:
         run_once()
         return
 
+    # Las tablas (y columnas nuevas) antes de que el bot lea nada de la BD.
+    init_db()
     # Bot interactivo (comandos) en un hilo daemon + scheduler en el hilo principal.
     threading.Thread(target=run_polling, daemon=True, name="telegram-polling").start()
     build_scheduler().start()

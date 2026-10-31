@@ -5,6 +5,9 @@ el usuario marca objetivos con un tope de precio; el bot puja por ellos en el
 decisión del usuario (autoriza de antemano con límite), pero le quita el tener
 que estar pendiente del cierre. Solo actúa sobre el mercado libre (nunca por
 jugadores que venden compañeros de liga). Respeta DRY_RUN.
+
+Solo puja en el MISMO anuncio en el que marcaste el objetivo (se guarda su cierre): si
+ese mercado cierra sin pujar o el jugador sale en otro anuncio, el objetivo caduca.
 """
 from __future__ import annotations
 
@@ -14,6 +17,7 @@ import time
 from bidding.targets import free_market_only
 from config.settings import settings
 from core.client import BiwengerClient
+from core.redact import describe_error, redact
 from data.db import active_snipe_targets, mark_snipe
 
 logger = logging.getLogger(__name__)
@@ -21,6 +25,10 @@ logger = logging.getLogger(__name__)
 # Cuánto antes del cierre se dispara la puja (segundos). El job corre cada
 # minuto, así que una ventana de ~90s asegura pujar en el último minuto.
 SNIPE_WINDOW_SECONDS = 90
+
+
+def _fmt(n: int) -> str:
+    return f"{int(n):,}".replace(",", ".")
 
 
 def process_snipes(client: BiwengerClient) -> list[str]:
@@ -39,29 +47,43 @@ def process_snipes(client: BiwengerClient) -> list[str]:
 
     for target in targets:
         pid = int(target.player_id)
+        name = target.player_name
+        amount = int(target.max_bid)  # pujamos el tope autorizado (maximiza ganar la subasta)
         listing = listings.get(pid)
+
+        if target.listing_until is None:
+            # Marcado con una versión anterior, sin atarlo a un anuncio: no se puja a ciegas.
+            mark_snipe(pid, "expired", "sin anuncio asociado")
+            messages.append(f"🎯 He quitado la auto-puja por {name}: se marcó con una versión anterior "
+                            f"del bot que no la ataba a un mercado concreto. Márcala otra vez desde "
+                            f"/mercado si aún la quieres.")
+            continue
         if listing is None:
-            continue  # ya no está en el mercado libre; esperamos por si vuelve
+            if now > target.listing_until:
+                mark_snipe(pid, "expired", "el mercado cerró")
+                messages.append(f"🎯 La auto-puja por {name} ha caducado: el mercado en que la marcaste ya cerró.")
+            continue  # aún no ha cerrado: puede ser una lectura puntual sin él
+        if int(listing.until.timestamp()) != target.listing_until:
+            mark_snipe(pid, "expired", "otro anuncio")
+            messages.append(f"🎯 La auto-puja por {name} ha caducado: ha vuelto a salir en otro mercado "
+                            f"y solo pujo en el que la marcaste. Márcala otra vez si aún lo quieres.")
+            continue
         seconds_left = listing.until.timestamp() - now
         if seconds_left > SNIPE_WINDOW_SECONDS:
             continue  # todavía no es el momento
 
-        amount = int(target.max_bid)  # pujamos el tope autorizado (maximiza ganar la subasta)
         try:
             client.place_bid(pid, amount)
-            mark_snipe(pid, "done", f"pujado {amount}")
-            if settings.dry_run:
-                messages.append(
-                    f"🎯 [MODO PRUEBA] Pujaría por {target.player_name}: {amount:,}€ "
-                    f"(cierre inminente).".replace(",", ".")
-                )
-            else:
-                messages.append(
-                    f"🎯 ¡Sniping! He pujado por {target.player_name}: {amount:,}€ justo antes "
-                    f"del cierre, como autorizaste.".replace(",", ".")
-                )
         except Exception as exc:  # noqa: BLE001
-            mark_snipe(pid, "error", str(exc))
-            messages.append(f"⚠️ No pude pujar por {target.player_name}: {exc}")
+            mark_snipe(pid, "error", type(exc).__name__)
+            logger.warning("Sniper: la puja por %s falló (%s)", pid, describe_error(exc))
+            messages.append(f"⚠️ No pude pujar por {name}: {redact(str(exc))}")
+            continue
+        mark_snipe(pid, "done", f"pujado {amount}")
+        if settings.dry_run:
+            messages.append(f"🎯 [MODO PRUEBA] Pujaría por {name}: {_fmt(amount)}€ (cierre inminente).")
+        else:
+            messages.append(f"🎯 ¡Sniping! He pujado por {name}: {_fmt(amount)}€ justo antes "
+                            f"del cierre, como autorizaste.")
 
     return messages

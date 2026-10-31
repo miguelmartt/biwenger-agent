@@ -27,13 +27,22 @@ NEED_MULTIPLIER = {
 BID_LEVELS = {"minima": 1.0, "competitiva": 1.15, "fuerte": 1.35}
 
 
+def spendable(available_budget: int) -> int:
+    """Lo que se puede gastar: el saldo menos el colchón que nunca se toca."""
+    return int(available_budget) - settings.budget_safety_margin
+
+
 def bid_levels(market_price: int, available_budget: int) -> dict[str, int]:
-    """Devuelve {nivel: importe} para pujar, capado por el presupuesto disponible."""
-    cap = max(available_budget - settings.budget_safety_margin, 0)
+    """Devuelve {nivel: importe} para pujar, capado por lo que puedes gastar (saldo menos
+    el colchón). Si eso no llega ni al precio mínimo del mercado, devuelve {}: no se ofrece
+    ninguna puja. Nunca devuelve un importe sin capar."""
+    cap = spendable(available_budget)
+    if cap <= 0 or cap < market_price:
+        return {}
     result: dict[str, int] = {}
     for name, mult in BID_LEVELS.items():
-        amount = round(market_price * mult / 1000) * 1000  # redondeo a miles
-        result[name] = min(amount, cap) if cap else amount
+        amount = max(round(market_price * mult / 1000) * 1000, market_price)  # a miles, nunca bajo el mínimo
+        result[name] = min(amount, cap)
     return result
 
 
@@ -63,8 +72,9 @@ def recommend_bid(
     ideal = round(base * multiplier)
     # La puja máxima añade un margen extra de seguridad para ganar la subasta
     # in extremis, pero nunca por encima del presupuesto disponible menos el colchón.
-    hard_cap = available_budget - settings.budget_safety_margin
+    hard_cap = spendable(available_budget)
     max_bid = min(round(ideal * 1.08), max(hard_cap, 0))
+    ideal = min(ideal, max_bid)  # tampoco la ideal pasa del tope (con tope 0, no se puja)
 
     reasoning = (
         f"precio_base={base}, tendencia={player.price_trend_pct:+.1f}%, "
