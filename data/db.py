@@ -6,7 +6,9 @@ from datetime import datetime
 
 from sqlalchemy import DateTime, Float, Integer, String, create_engine
 from sqlalchemy import Boolean
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from config.settings import settings
 
@@ -353,9 +355,22 @@ def filter_new_live_events(events):
     return new
 
 
-# check_same_thread solo aplica a SQLite; connect_args se ignora en otros motores.
-_connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
-engine = create_engine(settings.database_url, future=True, connect_args=_connect_args)
+def _is_sqlite_memory(url: str) -> bool:
+    parsed = make_url(url)
+    return parsed.get_backend_name() == "sqlite" and parsed.database in (None, "", ":memory:")
+
+
+def _engine_options(url: str) -> dict:
+    if not url.startswith("sqlite"):
+        return {}
+    # check_same_thread solo aplica a SQLite.
+    options: dict = {"connect_args": {"check_same_thread": False}}
+    if _is_sqlite_memory(url):
+        options["poolclass"] = StaticPool  # en memoria: una sola conexión, la misma BD para todos
+    return options
+
+
+engine = create_engine(settings.database_url, future=True, **_engine_options(settings.database_url))
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
 
 

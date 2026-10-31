@@ -20,7 +20,7 @@ def _listing(player_id, seller_id=None):
 def test_free_market_only_excludes_teammates():
     listings = [
         _listing(1, seller_id=None),        # mercado libre -> válido
-        _listing(2, seller_id=12731629),    # lo vende un compañero -> excluido
+        _listing(2, seller_id=123456),      # lo vende un compañero -> excluido
         _listing(3, seller_id=None),        # mercado libre -> válido
     ]
     free = free_market_only(listings)

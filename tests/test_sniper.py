@@ -52,7 +52,7 @@ def test_snipe_ignores_teammate_listings():
     init_db()
     add_snipe_target(777, "DeCompañero", 200000)
     # Está en el mercado pero lo vende un compañero -> el filtro lo excluye, no puja.
-    c = _Client([_listing(777, secs_to_close=10, seller_id=12731629)])
+    c = _Client([_listing(777, secs_to_close=10, seller_id=123456)])
     process_snipes(c)
     assert c.bids == []
 
