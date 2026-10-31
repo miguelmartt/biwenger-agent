@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import threading
 
 # Lo primero, antes de importar nada que pueda escribir en el log: el filtro que tapa los
@@ -15,6 +16,8 @@ from core.redact import install_log_redaction
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 install_log_redaction()
+# Lo que cree el proceso (la BD SQLite con el token, sus diarios) solo lo lee su dueño.
+os.umask(0o077)
 
 from bot.polling import run_polling  # noqa: E402
 from data.db import init_db  # noqa: E402

@@ -1,8 +1,15 @@
 """Persistencia de histórico (SQLAlchemy). Biwenger no da histórico largo vía
-API, así que guardamos snapshots nosotros mismos desde el primer día."""
+API, así que guardamos snapshots nosotros mismos desde el primer día.
+
+Todas las consultas van por el ORM con parámetros enlazados (nada de SQL montado con
+texto que venga de fuera). Ojo: la tabla `config` guarda en claro el token de Biwenger
+renovado con /token, así que el archivo de la BD (y cualquier copia) es un secreto: se
+deja legible solo por su dueño (ver `init_db`).
+"""
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -483,8 +490,9 @@ def _is_sqlite_memory(url: str) -> bool:
 def _engine_options(url: str) -> dict:
     if not url.startswith("sqlite"):
         return {}
-    # check_same_thread solo aplica a SQLite.
-    options: dict = {"connect_args": {"check_same_thread": False}}
+    # Dos hilos (bot y scheduler) comparten la BD: sin check_same_thread y esperando hasta
+    # 30 s si el otro está escribiendo, en vez de fallar con «database is locked».
+    options: dict = {"connect_args": {"check_same_thread": False, "timeout": 30}}
     if _is_sqlite_memory(url):
         options["poolclass"] = StaticPool  # en memoria: una sola conexión, la misma BD para todos
     return options
@@ -513,9 +521,20 @@ def _add_missing_columns() -> None:
                     logger.info("BD: añadida la columna %s.%s", table, name)
 
 
+def _restrict_db_file() -> None:
+    """El archivo SQLite guarda el token de Biwenger: que solo lo lea y escriba su dueño (0600)."""
+    if not settings.database_url.startswith("sqlite") or _is_sqlite_memory(settings.database_url):
+        return
+    try:
+        os.chmod(make_url(settings.database_url).database, 0o600)
+    except OSError as exc:
+        logger.warning("No he podido restringir los permisos de la BD (%s)", type(exc).__name__)
+
+
 def init_db() -> None:
     Base.metadata.create_all(engine)
     _add_missing_columns()
+    _restrict_db_file()
 
 
 def get_session() -> Session:

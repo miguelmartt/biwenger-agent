@@ -7,6 +7,8 @@ que hay que contar (una sola compra por confirmación, ninguna si algo cambió).
 from __future__ import annotations
 
 import dataclasses
+import os
+import stat
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -287,6 +289,23 @@ def test_failed_write_is_not_repeated_by_the_same_button():
     assert "No se pudo completar" in text and "No lo repito" in text
     text, _ = handle_callback(do, client)
     assert "ya se usó" in text
+
+
+# --------------------------------------------------------------------------- #
+# La BD: la de los tests es siempre en memoria; la real, solo para su dueño
+# --------------------------------------------------------------------------- #
+def test_tests_use_an_in_memory_database():
+    assert db.engine.url.database in (None, "", ":memory:")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="los permisos POSIX solo existen en Linux (el contenedor)")
+def test_db_file_is_restricted_to_its_owner(tmp_path, monkeypatch):
+    path = tmp_path / "biwenger.db"
+    path.write_bytes(b"")
+    path.chmod(0o644)
+    monkeypatch.setattr(db, "settings", dataclasses.replace(db.settings, database_url=f"sqlite:///{path}"))
+    db._restrict_db_file()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 # --------------------------------------------------------------------------- #
