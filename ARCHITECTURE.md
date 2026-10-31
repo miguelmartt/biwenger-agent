@@ -92,6 +92,14 @@ o perdido la puja, y permite comandos manuales (`/alineacion`, `/mercado`,
 `/pujar <jugador> <cantidad>`) para cuando prefieras decidir tú en vez de
 dejarlo en automático.
 
+Acciones con dinero (`bot/actions.py`): cada fichaje, puja, auto-puja, cláusula o venta se
+guarda en la BD (`PendingAction`) y el botón de confirmar solo lleva su id (`do:<id>`). Al
+pulsarlo se marca usada de forma atómica (un solo uso), se rechaza si tiene más de 10
+minutos y se vuelve a leer de Biwenger precio, cláusula, dueño y saldo: si algo ha cambiado,
+no se ejecuta. `bot/polling.py` solo atiende a tu chat privado, descarta al arrancar lo que
+Telegram acumuló y guarda el offset antes de actuar, así que un reinicio no repite nada.
+`core/redact.py` tapa los secretos en todos los logs.
+
 ### `scheduler/` — Orquestación
 
 Un único proceso APScheduler con los jobs:

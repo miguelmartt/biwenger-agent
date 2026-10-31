@@ -3,7 +3,7 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-65%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-166%20passing-brightgreen)
 ![Telegram](https://img.shields.io/badge/Telegram-bot-26A5E4?logo=telegram&logoColor=white)
 
 [English](./README.md) · **🌐 Español**
@@ -19,6 +19,11 @@ propios aciertos.
 > pujar, cláusula, vender) se ejecuta sin tu confirmación explícita. Las pocas
 > automatizaciones opcionales están **apagadas por defecto**. Arranca en modo
 > seguro (`DRY_RUN=true`), que solo simula las acciones de escritura.
+
+Cada botón de confirmar vale **una sola vez** y **caduca a los 10 minutos**, y antes de
+actuar el agente vuelve a leer de Biwenger el precio, la cláusula, el dueño y el saldo: si
+algo ha cambiado desde que lo pediste, no hace nada y te dice qué ha cambiado. Las pujas
+pasan por la misma doble confirmación (elegir un nivel de puja pregunta antes de pujar).
 
 Ver [`ARCHITECTURE.md`](./ARCHITECTURE.md) para el diseño completo y
 [`DEPLOY_VPS.md`](./DEPLOY_VPS.md) para desplegarlo 24/7 con Docker.
@@ -77,7 +82,7 @@ liga, jornada y «más»), y al navegar se edita el mismo mensaje en vez de amon
 - `/objetivos` — tus auto-pujas (sniping) programadas.
 - `/auto` — activa/desactiva las automatizaciones (ver abajo).
 - `/aprendizaje` — estado del auto-calibrado del predictor.
-- `/token <valor>` — renueva el token de Biwenger en caliente, sin tocar el servidor.
+- `/token <valor>` — renueva el token de Biwenger en caliente, sin tocar el servidor. En cuanto lo guarda, el bot borra del chat tu mensaje con el token.
 - `/equipo`, `/help`.
 
 ### Automatizaciones con límites (`/auto`)
@@ -88,8 +93,15 @@ los enciendas tú:
 - **Alineación automática** (riesgo cero): pone tu once óptimo una vez por jornada,
   ~4h antes del primer partido. Es reversible: puedes cambiarla antes del cierre.
 - **Subir cláusula automática**: blinda a tus cracks vulnerables (cláusula baja)
-  subiéndola una sola vez por jugador. Gasta saldo y usa un endpoint de escritura
-  aún no confirmado del todo — vigílalo la primera vez que lo actives.
+  subiéndola. Gasta saldo y usa un endpoint de escritura aún no confirmado del todo —
+  vigílalo la primera vez que lo actives. Límites: como mucho `AUTO_CLAUSE_MAX_PER_DAY`
+  intentos al día (1 por defecto), solo si la subida entera cabe en tu saldo menos
+  `BUDGET_SAFETY_MARGIN`, y un intento por jugador: si falla, te avisa una vez y no lo
+  reintenta cada media hora.
+
+Las auto-pujas pre-autorizadas (sniping) quedan atadas al anuncio del mercado en que las
+marcaste: el agente solo puja en ese anuncio, justo antes del cierre, y solo si el tope
+cabe en tu saldo menos el colchón. Si ese mercado cierra, el objetivo caduca.
 
 ### Espía de rivales (proactivo)
 
@@ -123,14 +135,40 @@ La API no oficial cambia sin avisar, así que el agente está hecho para aguanta
   único aviso para todos.
 - **Dependencias fijadas.** La imagen instala `requirements.lock` (versiones exactas
   probadas juntas), así que una librería que se actualiza sola no lo puede romper.
-  `.dockerignore` deja el `.env` y la base de datos fuera de la imagen.
+  `.dockerignore` deja el `.env`, la base de datos y los tests fuera de la imagen.
 
-Los tests, en un contenedor de usar y tirar, nunca contra tu base de datos real (la vacían):
+Los tests usan siempre una base de datos SQLite en memoria (`tests/conftest.py` lo fuerza
+antes de importar nada, y vacía las credenciales), así que no pueden tocar la tuya. La
+imagen no lleva los tests; para pasarlos en un contenedor de usar y tirar, móntalos:
 
 ```bash
 docker build -t biwenger-agent:test .
-docker run --rm biwenger-agent:test sh -c "pip install -q pytest && python -m pytest -q"
+docker run --rm --user root -v "$PWD/tests:/app/tests:ro" biwenger-agent:test \
+  sh -c "pip install -q pytest==8.3.5 && python -m pytest -q -p no:cacheprovider"
 ```
+
+## Seguridad
+
+- **Solo tu chat privado.** El bot atiende mensajes y botones solo si vienen de un chat
+  privado cuyo id, y el de quien escribe, son `TELEGRAM_CHAT_ID`. Ignora grupos, a otras
+  personas y los mensajes editados.
+- **Nada se repite tras un reinicio.** Al arrancar descarta lo que Telegram acumuló
+  mientras estaba parado, guarda el offset antes de actuar sobre cada update e ignora los
+  botones de acción de mensajes enviados antes de arrancar (los de navegación siguen valiendo).
+- **Ninguna escritura dos veces.** El cliente de Biwenger reintenta las lecturas, pero nunca
+  una escritura (puja, cláusula, venta) que pudo llegar a Biwenger; y nunca reintenta un
+  login rechazado con un 4xx (contraseña mal), para no bloquear la cuenta.
+- **Secretos fuera de los logs.** Un filtro de logging tapa el token del bot de Telegram y
+  el token y la contraseña de Biwenger (también la URL `/bot<TOKEN>/` que `requests` mete
+  en el texto de sus excepciones). Los logs de Docker rotan (3 archivos de 10 MB).
+- **Si alguna vez has compartido los logs, rota el token del bot** (@BotFather → `/revoke`)
+  y recrea el contenedor; lo explica [`DEPLOY_VPS.md`](./DEPLOY_VPS.md). Haz lo mismo con
+  la contraseña o el token de Biwenger si aparecen en logs viejos.
+- **Contenedor endurecido.** Usuario sin privilegios, sistema de archivos de solo lectura
+  (solo escribe en `/data` y en un `/tmp` en memoria), sin capacidades, `no-new-privileges`
+  y límites de memoria y procesos.
+- La base de datos SQLite guarda en claro el token renovado con `/token`: el archivo solo
+  lo lee su dueño (0600) y cualquier copia de seguridad suya es un secreto.
 
 ## Aviso importante
 
