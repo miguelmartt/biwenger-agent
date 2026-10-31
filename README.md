@@ -3,7 +3,7 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-166%20passing-brightgreen)
+[![CI](https://github.com/miguelmartt/biwenger-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/miguelmartt/biwenger-agent/actions/workflows/ci.yml)
 ![Telegram](https://img.shields.io/badge/Telegram-bot-26A5E4?logo=telegram&logoColor=white)
 
 **🌐 English** · [Español](./README.es.md)

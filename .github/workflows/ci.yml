@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      # Las mismas versiones que la imagen (requirements.lock), más pytest.
+      - run: pip install -r requirements.lock pytest==8.3.5
+      - run: python -m pytest -q -p no:cacheprovider
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: docker build -t biwenger-agent:ci .
+      # La imagen no lleva los tests: se montan y se ejecutan dentro, como explica el README.
+      - run: >-
+          docker run --rm --user root -v "$PWD/tests:/app/tests:ro" biwenger-agent:ci
+          sh -c "pip install -q pytest==8.3.5 && python -m pytest -q -p no:cacheprovider"
