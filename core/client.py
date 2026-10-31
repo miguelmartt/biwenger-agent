@@ -30,7 +30,8 @@ import time
 from datetime import datetime, timezone
 
 import requests
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
+from urllib3.exceptions import ConnectTimeoutError, NewConnectionError
 
 from config.settings import settings
 from core.models import (
@@ -55,6 +56,48 @@ WEB_URL = "https://biwenger.as.com/"
 APP_VERSION_RE = re.compile(r"cdn\.biwenger\.com/app/v(\d+)")
 # Los datos de la competición son pesados y varios jobs los piden seguidos: se reusan un minuto.
 COMPETITION_TTL = 60
+
+# Reintentos. Solo se repite lo que no puede hacer nada dos veces:
+#  - las lecturas (GET), ante fallos de red, timeouts y errores 5xx/429 de Biwenger;
+#  - las escrituras (POST/PUT/DELETE: pujar, pagar una cláusula, vender…), SOLO si la conexión
+#    falló antes de mandar nada (DNS, conexión rechazada, timeout al conectar). Si la petición
+#    llegó a salir, aunque se corte la respuesta, NO se repite: podría pujar o pagar dos veces.
+#  - el login, ante fallos de red y 5xx, pero nunca ante un 4xx (contraseña mal): repetirlo
+#    solo acerca el bloqueo de la cuenta.
+# Tras el último intento se relanza el error real (no un RetryError que lo esconde).
+RETRY_ATTEMPTS = 3
+RETRY_WAIT = wait_exponential(multiplier=1, min=1, max=10)
+IDEMPOTENT_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def _connect_failed(exc: BaseException) -> bool:
+    """¿Falló la conexión ANTES de enviar la petición? Entonces repetirla es seguro."""
+    if isinstance(exc, requests.exceptions.ConnectTimeout):
+        return True
+    if not isinstance(exc, requests.exceptions.ConnectionError):
+        return False
+    reason = exc.args[0] if exc.args else None
+    reason = getattr(reason, "reason", reason)  # urllib3 MaxRetryError -> la causa
+    return isinstance(reason, (NewConnectionError, ConnectTimeoutError))
+
+
+def _retryable(method: str, exc: BaseException) -> bool:
+    if not isinstance(exc, requests.RequestException):
+        return False
+    if method.upper() not in IDEMPOTENT_METHODS:
+        return _connect_failed(exc)
+    if isinstance(exc, requests.HTTPError):
+        status = exc.response.status_code if exc.response is not None else 0
+        return status >= 500 or status == 429
+    return True
+
+
+class _LoginServerError(RuntimeError):
+    """Biwenger respondió 5xx al login: es un fallo suyo, se puede reintentar."""
+
+
+def _login_retryable(exc: BaseException) -> bool:
+    return isinstance(exc, (requests.ConnectionError, requests.Timeout, _LoginServerError))
 
 
 def detect_app_version(session: requests.Session | None = None) -> str | None:
@@ -183,14 +226,22 @@ class BiwengerClient:
     # ------------------------------------------------------------------ #
     # Autenticación
     # ------------------------------------------------------------------ #
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
     def login(self) -> None:
+        """Login con email y contraseña. Reintenta fallos de red y 5xx, nunca un 4xx."""
+        Retrying(
+            stop=stop_after_attempt(RETRY_ATTEMPTS), wait=RETRY_WAIT,
+            retry=retry_if_exception(_login_retryable), reraise=True,
+        )(self._login_once)
+
+    def _login_once(self) -> None:
         resp = self._session.post(
             f"{API_BASE}/auth/login",
             json={"email": settings.biwenger_email, "password": settings.biwenger_password},
             headers={"X-Lang": "es", "X-Version": self._app_version},
             timeout=15,
         )
+        if resp.status_code >= 500:
+            raise _LoginServerError(f"Login falló ({resp.status_code}): Biwenger no responde bien")
         if resp.status_code != 200:
             raise BiwengerAuthError(f"Login falló ({resp.status_code}): {resp.text[:200]}")
 
@@ -255,12 +306,15 @@ class BiwengerClient:
             return
         self.login()
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        retry=retry_if_exception_type(requests.RequestException),
-    )
     def _request(self, method: str, url: str, **kwargs):
+        """Una petición autenticada a Biwenger, con la política de reintentos de arriba
+        (las escrituras no se repiten si la petición llegó a salir)."""
+        return Retrying(
+            stop=stop_after_attempt(RETRY_ATTEMPTS), wait=RETRY_WAIT,
+            retry=retry_if_exception(lambda exc: _retryable(method, exc)), reraise=True,
+        )(self._send, method, url, **kwargs)
+
+    def _send(self, method: str, url: str, **kwargs):
         self._sync_token()  # adopta el token si lo renovaste con /token (otra sesión)
         self._sync_app_version()
         self._ensure_auth()
