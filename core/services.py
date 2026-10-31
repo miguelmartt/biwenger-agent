@@ -5,10 +5,14 @@ exactamente lo mismo sin duplicar código.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from bidding.targets import free_market_only
+from config.settings import settings
 from core.client import BiwengerClient
 from core.models import Player
+from core.redact import describe_error, redact
 from economy.analyzer import ClauseRisk, ClauseTarget, build_report
 from economy.trends import analyze_trend
 from lineup.optimizer import best_lineup
@@ -28,6 +32,9 @@ DIFF_CAPTAIN_WEIGHT = 0.15
 # Cuánto pesa la racha de calendario (varias jornadas) en el valor a futuro de un
 # jugador para el optimizador. Más suave que la sensibilidad de una sola jornada.
 RUN_SENSITIVITY = 0.4
+# Contador de subidas de cláusula automáticas del día ("AAAA-MM-DD:n", en la tabla config).
+AUTO_CLAUSE_DAY_KEY = "autoclause_day"
+MADRID = ZoneInfo("Europe/Madrid")
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +163,11 @@ def clause_opportunities(
 
     Solo RECOMENDACIÓN: nunca paga nada. el usuario decide. (Permitido tocar
     cláusulas de compañeros; distinto de la regla de no fichar lo que venden.)
+    Solo entra lo que cabe en tu saldo menos el colchón (lo mismo que se exige al pagarla).
     """
+    from bidding.valuation import spendable
+
+    can_spend = spendable(budget)
     targets: list[ClauseTarget] = []
     for manager in client.get_league_managers():
         try:
@@ -166,7 +177,7 @@ def clause_opportunities(
             continue
         for pid, info in clauses.items():
             clause = info.get("clause")
-            if not clause or clause > budget:  # solo lo que puedes pagar ya
+            if not clause or clause > can_spend:  # solo lo que puedes pagar ya, sin tocar el colchón
                 continue
             player = catalog.get(pid)
             if player is None:
@@ -187,7 +198,8 @@ def clause_opportunities(
 def clause_risks(client: BiwengerClient, catalog: dict[int, Player], team) -> list[ClauseRisk]:
     """Tus jugadores buenos con la cláusula baja (riesgo de que te los roben).
 
-    Recomienda subirla; NO la sube solo (requiere tu confirmación por botón).
+    Solo los detecta y propone a cuánto subirla. Quien la sube es tu botón (con
+    confirmación) o, si la has encendido en /auto, `auto_raise_clauses`, con sus límites.
     """
     risks: list[ClauseRisk] = []
     for pid, owner in team.owned.items():
@@ -706,26 +718,56 @@ def auto_set_lineup(client: BiwengerClient, catalog: dict[int, Player] | None = 
 
 
 def auto_raise_clauses(client: BiwengerClient, catalog: dict[int, Player], team) -> list[str]:
-    """Si la auto-cláusula está activada, sube la cláusula de tus cracks vulnerables
-    (una vez por jugador). Usa raise_clause (endpoint no confirmado; respeta DRY_RUN)."""
+    """Si la auto-cláusula está activada (/auto; apagada por defecto), sube la cláusula de tus
+    cracks vulnerables. Gasta saldo con un endpoint aún no confirmado (raise_clause, respeta
+    DRY_RUN), así que va con límites:
+
+    - como mucho AUTO_CLAUSE_MAX_PER_DAY intentos al día, salgan bien o mal;
+    - solo si la subida cabe en tu saldo menos el colchón (BUDGET_SAFETY_MARGIN). Como no
+      sabemos cuánto cobra Biwenger exactamente, se cuenta como coste la subida entera;
+    - un solo intento por jugador: si sale bien no se vuelve a tocar, y si falla se marca y
+      NO se reintenta cada media hora (avisa una vez y la subes tú desde /mercado).
+    Si no llega el saldo, no intenta nada ni avisa (se vuelve a mirar en la siguiente pasada).
+    """
+    from bidding.valuation import spendable
     from data.db import get_setting, set_setting
 
     if get_setting("auto_clause") != "on":
         return []
+    today = datetime.now(MADRID).date().isoformat()
+    day, _, count = (get_setting(AUTO_CLAUSE_DAY_KEY) or "").partition(":")
+    attempts = int(count) if day == today and count.isdigit() else 0
+    available = spendable(team.balance)
     messages = []
     for r in clause_risks(client, catalog, team):
         marker = f"autoclause_{r.player.id}"
-        if get_setting(marker):  # ya subida antes, no repetir
+        if get_setting(marker):  # ya subida, o falló antes: no se repite
             continue
+        if attempts >= settings.auto_clause_max_per_day:
+            logger.info("Auto-cláusula: tope diario alcanzado (%s)", attempts)
+            break
+        cost = max(r.suggested_clause - r.clause, 0)
+        if cost > available:
+            logger.info("Auto-cláusula: no subo la de %s, no cabe en el saldo menos el colchón", r.player.id)
+            continue
+        attempts += 1
+        set_setting(AUTO_CLAUSE_DAY_KEY, f"{today}:{attempts}")  # cuenta antes de intentar
         try:
             client.raise_clause(r.player.id, r.suggested_clause)
-            set_setting(marker, "done")
-            messages.append(
-                f"🛡️ He subido la cláusula de {r.player.name} a {_fmt(r.suggested_clause)}€ "
-                f"(estaba baja y podían robártelo)."
-            )
         except Exception as exc:  # noqa: BLE001
-            messages.append(f"⚠️ No pude subir la cláusula de {r.player.name}: {exc}")
+            set_setting(marker, "failed")
+            logger.warning("Auto-cláusula: falló la subida de %s (%s)", r.player.id, describe_error(exc))
+            messages.append(
+                f"⚠️ No pude subir la cláusula de {r.player.name}: {redact(str(exc))}. "
+                f"No lo reintentaré solo; súbela tú desde /mercado si quieres."
+            )
+            continue
+        set_setting(marker, "done")
+        available -= cost
+        messages.append(
+            f"🛡️ He subido la cláusula de {r.player.name} a {_fmt(r.suggested_clause)}€ "
+            f"(estaba baja y podían robártelo)."
+        )
     return messages
 
 

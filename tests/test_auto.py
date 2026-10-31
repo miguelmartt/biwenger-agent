@@ -20,11 +20,12 @@ class _Client:
     """Cliente falso que registra las llamadas de escritura (para verificar que
     solo se ejecutan cuando toca)."""
 
-    def __init__(self, mine, balance=5_000_000, owned=None, round_id=100):
+    def __init__(self, mine, balance=5_000_000, owned=None, round_id=100, raise_error=None):
         self._mine = mine
         self._balance = balance
         self._owned = owned or {}
         self._round_id = round_id
+        self._raise_error = raise_error
         self.raised: list[tuple[int, int]] = []
         self.lineups: list[tuple] = []
 
@@ -43,6 +44,8 @@ class _Client:
 
     def raise_clause(self, pid, amount):
         self.raised.append((pid, amount))
+        if self._raise_error:
+            raise self._raise_error
 
     def set_lineup(self, ids, formation, captain_id):
         self.lineups.append((ids, formation, captain_id))
@@ -86,14 +89,19 @@ def test_toggle_persists_setting():
 # --------------------------------------------------------------------------- #
 # Auto-cláusula: cuando está ON, sube la de un crack vulnerable UNA sola vez.
 # --------------------------------------------------------------------------- #
+def _vulnerable_crack(pid=1, name="Crack"):
+    # Crack (5 pts/j) con cláusula muy por debajo de 1.4x su precio -> vulnerable.
+    crack = _p(pid, name, Position.FORWARD, 10_000_000, last_season=190)
+    return crack, {pid: {"clause": 11_000_000, "price": 10_000_000}}  # 1.1x < 1.4x -> riesgo
+
+
 def test_auto_clause_raises_once_when_on():
     init_db()
     set_setting("auto_clause", "on")
-    # Crack (5 pts/j) con cláusula muy por debajo de 1.4x su precio -> vulnerable.
-    crack = _p(1, "Crack", Position.FORWARD, 10_000_000, last_season=190)
+    crack, owned = _vulnerable_crack()
     catalog = {1: crack}
-    owned = {1: {"clause": 11_000_000, "price": 10_000_000}}  # 1.1x < 1.4x -> riesgo
-    client = _Client([crack], owned=owned)
+    # Subir de 11 M a 20 M: 9 M de subida, que caben en 30 M - 1 M de colchón.
+    client = _Client([crack], owned=owned, balance=30_000_000)
     team = client.get_my_team()
 
     msgs = services.auto_raise_clauses(client, catalog, team)
@@ -119,6 +127,45 @@ def test_auto_clause_skips_well_protected_player():
 
     assert services.auto_raise_clauses(client, catalog, team) == []
     assert client.raised == []
+
+
+def test_auto_clause_respects_balance_minus_margin():
+    # 9 M de subida y solo 5 M de saldo (4 M sin el colchón): no se toca.
+    init_db()
+    set_setting("auto_clause", "on")
+    crack, owned = _vulnerable_crack()
+    client = _Client([crack], owned=owned, balance=5_000_000)
+    assert services.auto_raise_clauses(client, {1: crack}, client.get_my_team()) == []
+    assert client.raised == []
+    assert get_setting("autoclause_1") is None  # se vuelve a mirar cuando haya saldo
+
+
+def test_auto_clause_daily_cap():
+    # Dos cracks vulnerables y saldo de sobra: con el tope por defecto (1 al día) solo uno.
+    init_db()
+    set_setting("auto_clause", "on")
+    a, owned_a = _vulnerable_crack(1, "A")
+    b, owned_b = _vulnerable_crack(2, "B")
+    client = _Client([a, b], owned={**owned_a, **owned_b}, balance=100_000_000)
+    team = client.get_my_team()
+    services.auto_raise_clauses(client, {1: a, 2: b}, team)
+    services.auto_raise_clauses(client, {1: a, 2: b}, team)  # la pasada de media hora después
+    assert len(client.raised) == 1
+
+
+def test_auto_clause_failure_is_not_retried_every_run():
+    init_db()
+    set_setting("auto_clause", "on")
+    crack, owned = _vulnerable_crack()
+    client = _Client([crack], owned=owned, balance=30_000_000, raise_error=RuntimeError("404"))
+    team = client.get_my_team()
+    first = services.auto_raise_clauses(client, {1: crack}, team)
+    assert first and "No lo reintentaré" in first[0]
+    assert get_setting("autoclause_1") == "failed"
+    # Al día siguiente (contador a cero) tampoco se reintenta ese jugador.
+    set_setting(services.AUTO_CLAUSE_DAY_KEY, "2000-01-01:1")
+    assert services.auto_raise_clauses(client, {1: crack}, team) == []
+    assert len(client.raised) == 1
 
 
 if __name__ == "__main__":

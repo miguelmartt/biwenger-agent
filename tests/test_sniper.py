@@ -1,5 +1,5 @@
 """Tests del sniping pre-autorizado: marca objetivo y puja en la ventana de cierre,
-solo en el mismo anuncio en que se marcó."""
+solo en el mismo anuncio en que se marcó y solo si el saldo lo cubre."""
 from __future__ import annotations
 
 import time
@@ -124,6 +124,47 @@ def test_legacy_snipe_without_listing_is_never_bid():
     messages = process_snipes(c)
     assert c.bids == [] and _status(904) == "expired"
     assert "versión anterior" in messages[0]
+
+
+def test_snipe_checks_balance_minus_margin():
+    # Saldo 1,1 M - colchón 1 M = 100 k: no cubre un tope de 200 k.
+    init_db()
+    until = _until(30)
+    add_snipe_target(905, "Caro", 200000, listing_until=until)
+    c = _Client([_listing(905, until)], balance=1_100_000)
+    messages = process_snipes(c)
+    assert c.bids == [] and _status(905) == "error"
+    assert "colchón" in messages[0]
+
+
+def test_snipe_counts_what_it_already_bid_in_the_same_run():
+    # 1,5 M de saldo - 1 M de colchón = 500 k: da para uno de 300 k, no para dos.
+    init_db()
+    until = _until(30)
+    add_snipe_target(906, "Uno", 300000, listing_until=until)
+    add_snipe_target(907, "Dos", 300000, listing_until=until)
+    c = _Client([_listing(906, until), _listing(907, until)], balance=1_500_000)
+    process_snipes(c)
+    assert len(c.bids) == 1
+
+
+def test_snipe_does_not_bid_blind_if_balance_unreadable():
+    init_db()
+    until = _until(30)
+    add_snipe_target(908, "Ciego", 200000, listing_until=until)
+    c = _Client([_listing(908, until)], balance_error=RuntimeError("timeout"))
+    messages = process_snipes(c)
+    assert c.bids == [] and _status(908) == "pending"
+    assert "saldo" in messages[0]
+
+
+def test_snipe_skips_if_market_minimum_exceeds_cap():
+    init_db()
+    until = _until(30)
+    add_snipe_target(909, "Subido", 200000, listing_until=until)
+    c = _Client([_listing(909, until, price=250000)])
+    process_snipes(c)
+    assert c.bids == [] and _status(909) == "error"
 
 
 if __name__ == "__main__":

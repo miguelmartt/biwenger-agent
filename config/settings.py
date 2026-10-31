@@ -35,6 +35,8 @@ class Settings:
 
     dry_run: bool = _bool("DRY_RUN", True)
     budget_safety_margin: int = int(os.getenv("BUDGET_SAFETY_MARGIN", "1000000"))
+    # Tope de subidas de cláusula automáticas (/auto) que se intentan al día, salgan bien o mal.
+    auto_clause_max_per_day: int = int(os.getenv("AUTO_CLAUSE_MAX_PER_DAY", "1"))
 
 
 settings = Settings()

@@ -6,8 +6,12 @@ decisión del usuario (autoriza de antemano con límite), pero le quita el tener
 que estar pendiente del cierre. Solo actúa sobre el mercado libre (nunca por
 jugadores que venden compañeros de liga). Respeta DRY_RUN.
 
-Solo puja en el MISMO anuncio en el que marcaste el objetivo (se guarda su cierre): si
-ese mercado cierra sin pujar o el jugador sale en otro anuncio, el objetivo caduca.
+Límites de cada objetivo:
+  - solo puja en el MISMO anuncio en el que lo marcaste (se guarda su cierre): si ese
+    mercado cierra sin pujar o el jugador sale en otro anuncio, el objetivo caduca;
+  - justo antes de pujar relee el saldo y solo puja si el tope cabe en el saldo menos el
+    colchón (BUDGET_SAFETY_MARGIN), contando lo ya pujado en esta misma pasada;
+  - si no puede leer el saldo, no puja a ciegas.
 """
 from __future__ import annotations
 
@@ -15,6 +19,7 @@ import logging
 import time
 
 from bidding.targets import free_market_only
+from bidding.valuation import spendable
 from config.settings import settings
 from core.client import BiwengerClient
 from core.redact import describe_error, redact
@@ -44,6 +49,9 @@ def process_snipes(client: BiwengerClient) -> list[str]:
     listings = {l.player_id: l for l in free_market_only(client.get_market())}
     now = time.time()
     messages: list[str] = []
+    balance: int | None = None   # se lee una vez, y solo si hay que pujar
+    balance_failed = False
+    committed = 0                # lo ya pujado en esta pasada
 
     for target in targets:
         pid = int(target.player_id)
@@ -72,6 +80,32 @@ def process_snipes(client: BiwengerClient) -> list[str]:
         if seconds_left > SNIPE_WINDOW_SECONDS:
             continue  # todavía no es el momento
 
+        if amount < listing.price:
+            mark_snipe(pid, "error", f"mínimo {listing.price} por encima del tope")
+            messages.append(f"⚠️ No pujo por {name}: el mínimo del mercado ({_fmt(listing.price)}€) "
+                            f"supera tu tope ({_fmt(amount)}€).")
+            continue
+
+        if balance is None and not balance_failed:
+            try:
+                balance = client.get_balance()
+            except Exception as exc:  # noqa: BLE001
+                balance_failed = True
+                logger.warning("Sniper: no pude leer el saldo (%s)", describe_error(exc))
+        if balance is None:
+            messages.append(f"⚠️ No he podido leer tu saldo y no pujo a ciegas por {name}. "
+                            f"Lo reintento en el siguiente minuto si aún da tiempo.")
+            continue
+        if committed + amount > spendable(balance):
+            mark_snipe(pid, "error", "saldo insuficiente")
+            messages.append(
+                f"⚠️ No pujo por {name}: tu saldo ({_fmt(balance)}€) menos el colchón "
+                f"({_fmt(settings.budget_safety_margin)}€)"
+                + (f" y lo ya pujado ({_fmt(committed)}€)" if committed else "")
+                + f" no cubre los {_fmt(amount)}€."
+            )
+            continue
+
         try:
             client.place_bid(pid, amount)
         except Exception as exc:  # noqa: BLE001
@@ -79,6 +113,7 @@ def process_snipes(client: BiwengerClient) -> list[str]:
             logger.warning("Sniper: la puja por %s falló (%s)", pid, describe_error(exc))
             messages.append(f"⚠️ No pude pujar por {name}: {redact(str(exc))}")
             continue
+        committed += amount
         mark_snipe(pid, "done", f"pujado {amount}")
         if settings.dry_run:
             messages.append(f"🎯 [MODO PRUEBA] Pujaría por {name}: {_fmt(amount)}€ (cierre inminente).")
