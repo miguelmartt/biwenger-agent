@@ -40,7 +40,7 @@ def _solve_for_formation(
     requirements = FORMATIONS[formation]
     prob = pulp.LpProblem(f"lineup_{formation}", pulp.LpMaximize)
 
-    x = {p.id: pulp.LpVariable(f"x_{p.id}", cat="Binary") for p in players}
+    x = {p.id: prob.add_variable(f"x_{p.id}", cat="Binary") for p in players}
 
     prob += pulp.lpSum(x[p.id] * expected_points.get(p.id, 0.0) for p in players)
 
@@ -61,11 +61,15 @@ def _solve_for_formation(
         if p.is_injured_or_suspended:
             prob += x[p.id] == 0
 
-    status = prob.solve(pulp.PULP_CBC_CMD(msg=False))
+    # HiGHS resuelve en el propio proceso (highspy): sin binario externo ni archivos
+    # temporales, así que funciona igual en el contenedor de solo lectura. El CBC que
+    # trae PuLP (PULP_CBC_CMD) desaparece en PuLP 4.0.
+    status = prob.solve(pulp.HiGHS(msg=False))
     if pulp.LpStatus[status] != "Optimal":
         return None
 
-    starters = [p for p in players if pulp.value(x[p.id]) == 1]
+    # Las binarias llegan con la tolerancia del solver (0.9999999 cuenta como titular).
+    starters = [p for p in players if (pulp.value(x[p.id]) or 0) > 0.5]
     total = sum(expected_points.get(p.id, 0.0) for p in starters)
     captain = max(starters, key=lambda p: expected_points.get(p.id, 0.0)) if starters else None
     return LineupResult(
