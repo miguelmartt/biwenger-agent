@@ -9,11 +9,16 @@ import argparse
 import logging
 import threading
 
-from bot.polling import run_polling
-from data.db import init_db
-from scheduler.jobs import build_scheduler, job_economy_report, job_suggest_lineup, job_sync_state
+# Lo primero, antes de importar nada que pueda escribir en el log: el filtro que tapa los
+# secretos (token del bot, token y contraseña de Biwenger) en todo lo que se registre.
+from core.redact import install_log_redaction
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+install_log_redaction()
+
+from bot.polling import run_polling  # noqa: E402
+from data.db import init_db  # noqa: E402
+from scheduler.jobs import build_scheduler, job_economy_report, job_suggest_lineup, job_sync_state  # noqa: E402
 
 
 def run_once() -> None:

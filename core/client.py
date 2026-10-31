@@ -43,6 +43,7 @@ from core.models import (
     TeamState,
     UpcomingFixture,
 )
+from core.redact import register_secret
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,7 @@ class BiwengerClient:
             db_token = get_setting("biwenger_token")
         except Exception:  # noqa: BLE001
             db_token = None
+        register_secret(db_token)  # que nunca salga en un log
         return db_token or settings.biwenger_token or None
 
     def _sync_token(self) -> None:
@@ -172,6 +174,7 @@ class BiwengerClient:
     def update_token(self, new_token: str) -> None:
         """Guarda un token nuevo (renovación en caliente desde Telegram)."""
         from data.db import set_setting
+        register_secret(new_token)
         set_setting("biwenger_token", new_token.strip())
         self._token = new_token.strip()
         self._manual_token = True
@@ -194,6 +197,7 @@ class BiwengerClient:
         self._token = resp.json().get("token")
         if not self._token:
             raise BiwengerAuthError("Login OK pero no se recibió token")
+        register_secret(self._token)
 
         self._session.headers.update(self._base_headers())
         # Resolver league_id / team_id automáticamente si no venían en el .env.

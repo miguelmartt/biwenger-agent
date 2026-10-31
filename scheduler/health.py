@@ -7,10 +7,12 @@ puntual no merece un mensaje). Si caduca el token, fallan todos a la vez: un ún
 """
 from __future__ import annotations
 
+import html
 import logging
 from collections.abc import Callable
 
 from core.client import BiwengerTokenExpired
+from core.redact import describe_error, redact
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +45,7 @@ class JobHealth:
         self.alerted: set[str] = set()
 
     def on_error(self, job_id: str, exc: BaseException) -> None:
-        logger.error("Job %s falló: %s", job_id, exc)
+        logger.error("Job %s falló: %s", job_id, describe_error(exc))
         count = self.failures.get(job_id, 0) + 1
         self.failures[job_id] = count
         key = TOKEN if isinstance(exc, BiwengerTokenExpired) else job_id
@@ -71,5 +73,7 @@ class JobHealth:
 
 
 def _short(exc: BaseException) -> str:
-    text = str(exc) or type(exc).__name__
-    return text if len(text) <= 200 else text[:200] + "…"
+    """El error para el aviso de Telegram: sin secretos y escapado (el aviso va en HTML)."""
+    text = redact(str(exc)) or type(exc).__name__
+    text = text if len(text) <= 200 else text[:200] + "…"
+    return html.escape(text, quote=False)

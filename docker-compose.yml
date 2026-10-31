@@ -10,6 +10,12 @@ services:
       - biwenger_data:/data
     # Sin puertos publicados: el agente solo hace peticiones salientes a Biwenger.
     # No expone nada a la red, así que no hay que tocar el firewall del VPS.
+    # Logs con rotación: como mucho 3 archivos de 10 MB (sin esto crecen sin límite).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   biwenger_data:

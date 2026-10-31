@@ -3,6 +3,10 @@ registro del menú de comandos, lectura de updates y respuesta a botones.
 
 Los textos son planos salvo que vengan marcados como `Html(...)`: entonces se envían
 con parse_mode HTML (negritas, <code>, <pre>…) y quien los construye escapa los datos.
+
+La URL de la API lleva el token del bot (`/bot<TOKEN>/…`) y requests la copia en el texto
+de sus excepciones: aquí los fallos se registran solo con su tipo y su código HTTP, y
+`get_updates` lanza un TelegramError limpio en vez de la excepción original.
 """
 from __future__ import annotations
 
@@ -13,10 +17,15 @@ import re
 import requests
 
 from config.settings import settings
+from core.redact import describe_error
 
 logger = logging.getLogger(__name__)
 
 API = "https://api.telegram.org"
+
+
+class TelegramError(RuntimeError):
+    """Fallo hablando con Telegram, con un texto que no incluye el token."""
 
 # Un "botón" es (texto_visible, callback_data). Los botones pueden ir como lista plana
 # (uno por fila, el formato de siempre) o como lista de filas para ponerlos en cuadrícula.
@@ -87,7 +96,7 @@ def _post(method: str, payload: dict) -> requests.Response | None:
     try:
         return requests.post(f"{base}/{method}", json=payload, timeout=10)
     except requests.RequestException as exc:
-        logger.warning("Telegram %s falló: %s", method, exc)
+        logger.warning("Telegram %s falló: %s", method, describe_error(exc))
         return None
 
 
@@ -163,10 +172,14 @@ def get_updates(offset: int | None, timeout: int = 30) -> list[dict]:
     base = _base()
     if not base:
         return []
-    resp = requests.get(
-        f"{base}/getUpdates",
-        params={"offset": offset, "timeout": timeout},
-        timeout=timeout + 10,
-    )
-    resp.raise_for_status()
+    try:
+        resp = requests.get(
+            f"{base}/getUpdates",
+            params={"offset": offset, "timeout": timeout},
+            timeout=timeout + 10,
+        )
+    except requests.RequestException as exc:
+        raise TelegramError(f"getUpdates falló: {describe_error(exc)}") from None
+    if resp.status_code != 200:
+        raise TelegramError(f"getUpdates respondió {resp.status_code}")
     return resp.json().get("result", []) or []

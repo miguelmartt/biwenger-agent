@@ -227,4 +227,7 @@ def build_scheduler() -> BlockingScheduler:
 
 
 if __name__ == "__main__":
+    from core.redact import install_log_redaction
+
+    install_log_redaction()
     build_scheduler().start()

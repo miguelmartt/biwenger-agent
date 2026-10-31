@@ -15,6 +15,7 @@ import time
 from bot.actions import handle_callback
 from bot.commands import COMMAND_MENU, handle_command, nav, with_nav
 from bot.telegram_bot import (
+    TelegramError,
     answer_callback_query,
     edit_message,
     get_updates,
@@ -24,6 +25,7 @@ from bot.telegram_bot import (
 )
 from config.settings import settings
 from core.client import BiwengerClient
+from core.redact import describe_error
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +105,9 @@ def run_polling() -> None:
                     send_typing()
                 reply, buttons = handle_command(text, client)
                 send_message(reply, with_nav(command, buttons) if command != "token" else None)
-        except Exception as exc:  # noqa: BLE001 - el bucle nunca debe morir
+        except TelegramError as exc:  # su texto ya viene sin el token
             logger.warning("Error en el polling de Telegram: %s", exc)
+            time.sleep(5)
+        except Exception as exc:  # noqa: BLE001 - el bucle nunca debe morir
+            logger.warning("Error atendiendo a Telegram: %s", describe_error(exc), exc_info=True)
             time.sleep(5)
