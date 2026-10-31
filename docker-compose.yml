@@ -10,6 +10,19 @@ services:
       - biwenger_data:/data
     # Sin puertos publicados: el agente solo hace peticiones salientes a Biwenger.
     # No expone nada a la red, así que no hay que tocar el firewall del VPS.
+
+    # Endurecido: corre como usuario sin privilegios (Dockerfile), sin capacidades de root,
+    # sin poder ganar privilegios y con el sistema de archivos de solo lectura. Solo escribe
+    # en /data (el volumen) y en /tmp (en memoria; ahí deja PuLP sus archivos temporales).
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 768m
+    pids_limit: 128
     # Logs con rotación: como mucho 3 archivos de 10 MB (sin esto crecen sin límite).
     logging:
       driver: json-file
